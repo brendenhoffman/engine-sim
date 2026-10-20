@@ -1,6 +1,6 @@
-#include "../include/engine_context.h"
+#include "engine_context.h"
 
-#include "../include/cylinder_bank_node.h"
+#include "cylinder_bank_node.h"
 
 es_script::EngineContext::EngineContext() {
     /* void */

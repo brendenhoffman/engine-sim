@@ -1,0 +1,6 @@
+option('gui', type: 'feature', value: 'enabled',
+  description: 'Build the full GUI (needs SDL and OpenGL)')
+option('tests', type: 'feature', value: 'auto',
+  description: 'Build unit tests (needs gtest)')
+option('data_root', type: 'string', value: '',
+  description: 'Where installed binaries look for data (default: <datadir>/engine-sim)')

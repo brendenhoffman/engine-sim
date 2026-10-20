@@ -1,0 +1,41 @@
+# simple-2d-constraint-solver (vendored, see ../VENDORED.md)
+scs_lib = static_library(
+  'scs',
+  files(
+    'src/clutch_constraint.cpp',
+    'src/conjugate_gradient_sle_solver.cpp',
+    'src/constant_rotation_constraint.cpp',
+    'src/constant_speed_motor.cpp',
+    'src/constraint.cpp',
+    'src/euler_ode_solver.cpp',
+    'src/fixed_position_constraint.cpp',
+    'src/force_generator.cpp',
+    'src/gauss_seidel_sle_solver.cpp',
+    'src/gaussian_elimination_sle_solver.cpp',
+    'src/generic_rigid_body_system.cpp',
+    'src/gravity_force_generator.cpp',
+    'src/line_constraint.cpp',
+    'src/link_constraint.cpp',
+    'src/matrix.cpp',
+    'src/nsv_ode_solver.cpp',
+    'src/ode_solver.cpp',
+    'src/optimized_nsv_rigid_body_system.cpp',
+    'src/rigid_body.cpp',
+    'src/rigid_body_system.cpp',
+    'src/rk4_ode_solver.cpp',
+    'src/rolling_constraint.cpp',
+    'src/rotation_friction_constraint.cpp',
+    'src/sle_solver.cpp',
+    'src/sparse_matrix.cpp',
+    'src/spring.cpp',
+    'src/static_force_generator.cpp',
+    'src/system_state.cpp',
+    'src/utilities.cpp',
+  ),
+  include_directories: include_directories('include'),
+)
+
+scs_dep = declare_dependency(
+  link_with: scs_lib,
+  include_directories: third_party_inc,
+)

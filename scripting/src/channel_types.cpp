@@ -1,4 +1,4 @@
-#include "../include/channel_types.h"
+#include "channel_types.h"
 
 #define DEFINE_CHANNEL(channel_type) const piranha::ChannelType es_script::ObjectChannel::channel_type(#channel_type);
 

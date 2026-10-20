@@ -1,4 +1,4 @@
-#include "../include/compiler.h"
+#include "compiler.h"
 
 es_script::Compiler::Output *es_script::Compiler::s_output = nullptr;
 
@@ -26,9 +26,6 @@ void es_script::Compiler::initialize(const std::vector<piranha::IrPath> &searchP
     for (const auto &path : searchPaths) {
         m_compiler->addSearchPath(path);
     }
-    m_compiler->addSearchPath("../../es/");
-    m_compiler->addSearchPath("../es/");
-    m_compiler->addSearchPath("es/");
 
     m_rules.initialize();
 }
