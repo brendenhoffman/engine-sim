@@ -60,6 +60,7 @@ HostPaths HostPaths::resolve() {
 
     paths.userData = xdgDir("XDG_DATA_HOME", ".local/share");
     paths.outputPath = xdgDir("XDG_STATE_HOME", ".local/state");
+    paths.configPath = xdgDir("XDG_CONFIG_HOME", ".config");
 
     return paths;
 }
@@ -70,6 +71,7 @@ EngineHost::EngineHost(HostPaths paths) : m_paths(std::move(paths)) {
 
 EngineHost::~EngineHost() {
     stop();
+    if (m_transport) m_transport->stop();
 
     std::lock_guard<std::mutex> lock(m_mutex);
     release(m_engine, m_vehicle, m_transmission, m_simulator);
@@ -116,7 +118,8 @@ bool EngineHost::compile(
                 out->settings = output.applicationSettings;
             }
             else {
-                log << scriptPath << ": script compiled but did not create an engine" << std::endl;
+                log << scriptPath << ": script compiled but did not create an engine"
+                    << " (load a script that calls main() or set_engine(), like assets/main.mr)" << std::endl;
             }
         }
 
@@ -194,7 +197,7 @@ bool EngineHost::prepare(Compiled *compiled, Simulator **simulatorOut, std::stri
     return true;
 }
 
-void EngineHost::install(const Compiled &compiled, Simulator *simulator) {
+void EngineHost::install(const Compiled &compiled, Simulator *simulator, const std::string &script) {
     std::lock_guard<std::mutex> lock(m_mutex);
 
     Engine *oldEngine = m_engine;
@@ -207,7 +210,10 @@ void EngineHost::install(const Compiled &compiled, Simulator *simulator) {
     m_transmission = compiled.transmission;
     m_simulator = simulator;
     m_applicationSettings = compiled.settings;
+    m_loadedScript = script;
     m_audioDue = 0;
+    if (m_frequencyOverride > 0) m_simulator->setSimulationFrequency(m_frequencyOverride);
+    if (m_bridge) m_bridge->reset();
 
     // Consumers drop anything pointing into the old engine before it's freed
     if (m_engineChangedHook) m_engineChangedHook();
@@ -292,7 +298,7 @@ EngineHost::LoadResult EngineHost::loadScript(const std::string &requestedPath) 
         result.message = "Script failed, loaded the default engine. See " + logPath;
     }
 
-    install(compiled, simulator);
+    install(compiled, simulator, result.usedFallback ? shippedScript : result.script);
 
     result.engineLoaded = true;
     result.replaced = true;
@@ -301,6 +307,42 @@ EngineHost::LoadResult EngineHost::loadScript(const std::string &requestedPath) 
     }
 
     return result;
+}
+
+bool EngineHost::enableBridge(int port, int audioPort) {
+    if (m_bridge) return true;
+
+    auto transport = std::make_unique<BridgeTransport>();
+    if (!transport->start(port, audioPort)) return false;
+
+    m_transport = std::move(transport);
+    m_bridge = std::make_unique<BeamBridge>(m_transport.get());
+    return true;
+}
+
+void EngineHost::setSimulationFrequencyOverride(double hz) {
+    m_frequencyOverride = hz;
+    if (m_simulator == nullptr || m_engine == nullptr) return;
+
+    m_simulator->setSimulationFrequency(hz > 0 ? hz : m_engine->getSimulationFrequency());
+}
+
+void EngineHost::post(std::function<void()> job) {
+    std::lock_guard<std::mutex> lock(m_jobMutex);
+    m_jobs.push_back(std::move(job));
+}
+
+void EngineHost::runPending() {
+    for (;;) {
+        std::function<void()> job;
+        {
+            std::lock_guard<std::mutex> lock(m_jobMutex);
+            if (m_jobs.empty()) return;
+            job = std::move(m_jobs.front());
+            m_jobs.pop_front();
+        }
+        job();
+    }
 }
 
 void EngineHost::start() {
@@ -346,6 +388,8 @@ void EngineHost::tick(double dt) {
     // If the thread was held up, don't try to catch up more than a frame's worth at once
     dt = std::min(dt, 1 / 30.0);
 
+    if (m_bridge) m_bridge->beforeFrame(m_simulator, m_engine, dt);
+
     m_simulator->setSimulationSpeed(m_simulationSpeed);
     m_simulator->startFrame(dt);
 
@@ -353,7 +397,8 @@ void EngineHost::tick(double dt) {
     stats.iterations = m_simulator->getFrameIterationCount();
 
     const auto t0 = std::chrono::steady_clock::now();
-    while (m_simulator->simulateStep()) {
+    for (int step = 1; m_simulator->simulateStep(); ++step) {
+        if (m_bridge) m_bridge->onStep(m_simulator, step, stats.iterations);
         if (m_stepHook) m_stepHook();
     }
     const auto t1 = std::chrono::steady_clock::now();
@@ -361,6 +406,17 @@ void EngineHost::tick(double dt) {
     m_simulator->endFrame();
 
     stats.processingSeconds = std::chrono::duration<double>(t1 - t0).count();
+
+    m_statWindow += dt;
+    m_statSteps += stats.iterations;
+    m_statBusy += stats.processingSeconds;
+    if (m_statWindow >= 1.0) {
+        m_stepsPerSecond = m_statSteps / m_statWindow;
+        m_load = m_statBusy / m_statWindow;
+        m_statWindow = 0;
+        m_statSteps = 0;
+        m_statBusy = 0;
+    }
     stats.inputLatency = m_simulator->getSynthesizerInputLatency();
     stats.inputLatencyTarget = m_simulator->getSynthesizerInputLatencyTarget();
     if (m_frameHook) m_frameHook(stats);
@@ -376,6 +432,7 @@ void EngineHost::tick(double dt) {
         if (read <= 0) break;
 
         m_audioDue -= read;
+        if (m_bridge) m_bridge->onAudio(m_audioScratch.data(), read);
         if (m_audioHook) m_audioHook(m_audioScratch.data(), read);
 
         if (read < wanted) break;

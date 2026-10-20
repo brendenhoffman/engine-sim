@@ -6,21 +6,26 @@ build_info_h = configure_file(
 )
 
 host_inc = include_directories('include', '.')
+json_dep = dependency('nlohmann_json', version: '>=3.10')
 
 host_lib = static_library(
   'engine-sim-host',
   files(
+    'src/beam_bridge.cpp',
+    'src/bridge_transport.cpp',
+    'src/control_server.cpp',
     'src/engine_host.cpp',
+    'src/host_settings.cpp',
     'src/wav_reader.cpp',
   ),
   build_info_h,
   include_directories: host_inc,
-  dependencies: [sim_dep, scripting_dep],
+  dependencies: [sim_dep, scripting_dep, json_dep],
 )
 
 host_dep = declare_dependency(
   link_with: host_lib,
   sources: build_info_h,
   include_directories: host_inc,
-  dependencies: [sim_dep, scripting_dep],
+  dependencies: [sim_dep, scripting_dep, json_dep],
 )

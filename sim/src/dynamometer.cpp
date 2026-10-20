@@ -12,6 +12,7 @@ Dynamometer::Dynamometer() : atg_scs::Constraint(1, 1) {
 
     m_enabled = false;
     m_hold = false;
+    m_forwardSign = 0;
 }
 
 Dynamometer::~Dynamometer() {
@@ -36,7 +37,13 @@ void Dynamometer::calculate(Output *output, atg_scs::SystemState *state) {
 
     output->C[0] = 0;
 
-    if (m_bodies[0]->v_theta < 0) {
+    if (m_forwardSign != 0 && m_hold && m_enabled) {
+        // A crank that wobbled backwards at standstill must not be held spinning in reverse
+        output->v_bias[0] = -m_forwardSign * m_rotationSpeed;
+        output->limits[0][0] = -m_maxTorque;
+        output->limits[0][1] = m_maxTorque;
+    }
+    else if (m_bodies[0]->v_theta < 0) {
         output->v_bias[0] = m_rotationSpeed;
         output->limits[0][0] = (m_hold && m_enabled) ? -m_maxTorque : 0.0;
         output->limits[0][1] = m_enabled ? m_maxTorque : 0.0;
@@ -49,6 +56,8 @@ void Dynamometer::calculate(Output *output, atg_scs::SystemState *state) {
 }
 
 double Dynamometer::getTorque() const {
+    if (m_forwardSign != 0) return -m_forwardSign * atg_scs::Constraint::F_t[0][0];
+
     return (m_bodies[0]->v_theta > 0)
         ? -atg_scs::Constraint::F_t[0][0]
         : atg_scs::Constraint::F_t[0][0];

@@ -11,3 +11,7 @@ compile_commands.json
 # Blender temporary files
 *.blend1
 build-*/
+
+# Meson subprojects downloaded from WrapDB (keep the .wrap files)
+subprojects/*/
+subprojects/packagecache/

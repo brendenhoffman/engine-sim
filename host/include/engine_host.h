@@ -2,10 +2,14 @@
 #define ATG_ENGINE_SIM_HOST_ENGINE_HOST_H
 
 #include "application_settings.h"
+#include "beam_bridge.h"
+#include "bridge_transport.h"
 
 #include <atomic>
 #include <cstdint>
+#include <deque>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -21,6 +25,7 @@ struct HostPaths {
     std::string dataRoot;   // Shipped data: assets/, es/, delta/
     std::string userData;   // User overrides, e.g. assets/main.mr (~/.local/share/engine-sim)
     std::string outputPath; // Logs (~/.local/state/engine-sim)
+    std::string configPath; // Settings (~/.config/engine-sim)
 
     // ENGINE_SIM_DATA_ROOT, then the installed data, then the source tree; XDG dirs for the rest
     static HostPaths resolve();
@@ -73,10 +78,26 @@ public:
     // Must not be called while holding lock().
     LoadResult loadScript(const std::string &scriptPath = "");
 
+    // Listens for BeamNG on 127.0.0.1:port. Call before start(); false if the port is taken.
+    bool enableBridge(int port = BridgeTransport::DefaultPort, int audioPort = BridgeTransport::DefaultAudioPort);
+
+    // Following BeamNG right now (safe without the lock)
+    bool bridgeActive() const { return m_bridge != nullptr && m_bridge->active(); }
+
     // Simulation thread
     void start();
     void stop();
     bool running() const { return m_running; }
+
+    // Work that must happen on the thread that owns the host (the GUI's main thread, or
+    // headless's main loop), such as loading engines requested over the control socket.
+    // post() is safe from any thread; the owner calls runPending() regularly, without the lock.
+    void post(std::function<void()> job);
+    void runPending();
+
+    // Measured over the last second (safe without the lock)
+    double stepsPerSecond() const { return m_stepsPerSecond; }
+    double load() const { return m_load; } // Fraction of real time spent simulating
 
     std::unique_lock<std::mutex> lock() { return std::unique_lock<std::mutex>(m_mutex); }
 
@@ -87,6 +108,12 @@ public:
     Vehicle *vehicle() { return m_vehicle; }
     Transmission *transmission() { return m_transmission; }
     const ApplicationSettings &applicationSettings() const { return m_applicationSettings; }
+    const std::string &loadedScript() const { return m_loadedScript; }
+    BeamBridge *bridge() { return m_bridge.get(); } // nullptr unless enableBridge() succeeded
+
+    // 0 uses each engine's own rate. Applies now and to engines loaded later.
+    void setSimulationFrequencyOverride(double hz);
+    double simulationFrequencyOverride() const { return m_frequencyOverride; }
 
     void setSimulationSpeed(double speed) { m_simulationSpeed = speed; }
     double simulationSpeed() const { return m_simulationSpeed; }
@@ -110,7 +137,7 @@ private:
 
     bool compile(const std::string &scriptPath, const std::string &logPath, Compiled *out, std::string *errors);
     bool prepare(Compiled *compiled, Simulator **simulator, std::string *errors);
-    void install(const Compiled &compiled, Simulator *simulator);
+    void install(const Compiled &compiled, Simulator *simulator, const std::string &script);
     static void release(Engine *engine, Vehicle *vehicle, Transmission *transmission, Simulator *simulator);
 
     void simulationThread();
@@ -128,12 +155,26 @@ private:
     Transmission *m_transmission = nullptr;
     Simulator *m_simulator = nullptr;
     ApplicationSettings m_applicationSettings;
+    std::string m_loadedScript;
 
     double m_simulationSpeed = 1.0;
+    double m_frequencyOverride = 0;
     bool m_paused = false;
     bool m_stepOnce = false;
 
+    std::unique_ptr<BridgeTransport> m_transport;
+    std::unique_ptr<BeamBridge> m_bridge;
+
     double m_audioDue = 0;
+
+    std::mutex m_jobMutex;
+    std::deque<std::function<void()>> m_jobs;
+
+    std::atomic<double> m_stepsPerSecond{0};
+    std::atomic<double> m_load{0};
+    double m_statWindow = 0;
+    long long m_statSteps = 0;
+    double m_statBusy = 0;
     std::vector<int16_t> m_audioScratch;
 
     StepHook m_stepHook;

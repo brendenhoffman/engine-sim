@@ -57,13 +57,19 @@ bool es_script::Compiler::compile(const piranha::IrPath &path, std::ostream &log
 }
 
 es_script::Compiler::Output es_script::Compiler::execute() {
+    // Script nodes write into a global output. Start clean, and hand everything over afterwards,
+    // so a script that never calls set_engine() can't return objects from an earlier run.
+    *output() = Output();
+
     const bool result = m_program.execute();
 
     if (!result) {
         // Todo: Runtime error
     }
 
-    return *output();
+    const Output result_ = *output();
+    *output() = Output();
+    return result_;
 }
 
 void es_script::Compiler::destroy() {

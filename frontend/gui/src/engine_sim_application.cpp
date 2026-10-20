@@ -93,6 +93,11 @@ void EngineSimApplication::initialize(void *instance, ysContextObject::DeviceAPI
     const HostPaths paths = HostPaths::resolve();
     m_host = std::make_unique<EngineHost>(paths);
 
+    m_settingsFile = paths.configPath + "/settings.json";
+    std::string settingsError;
+    m_startupSettings = HostSettings::load(m_settingsFile, &settingsError);
+    if (!settingsError.empty()) std::cerr << "engine-sim: " << settingsError << std::endl;
+
     const std::string enginePath = paths.dataRoot + "/delta";
     m_assetPath = paths.dataRoot + "/assets";
 
@@ -160,7 +165,20 @@ void EngineSimApplication::initialize() {
     m_host->setAudioHook([this](const int16_t *samples, int count) { onAudio(samples, count); });
     m_host->setFrameHook([this](const EngineHost::FrameStats &stats) { onFrame(stats); });
 
-    reloadEngine();
+    reloadEngine(m_startupSettings.script);
+
+    if (!m_host->enableBridge()) {
+        std::cerr << "engine-sim: could not listen on port " << BridgeTransport::DefaultPort
+                  << " (another engine-sim running?); BeamNG bridge disabled" << std::endl;
+    }
+
+    applySettings(m_host.get(), m_startupSettings);
+
+    m_control = std::make_unique<ControlServer>(m_host.get(), m_startupSettings, m_settingsFile);
+    std::string controlError;
+    if (!m_control->start(ControlServer::defaultSocketPath(), &controlError)) {
+        std::cerr << "engine-sim: " << controlError << "; control socket disabled" << std::endl;
+    }
 
     m_audioBuffer.initialize(44100, 44100);
     m_audioBuffer.m_writePointer = (int)(44100 * 0.1);
@@ -240,6 +258,13 @@ void EngineSimApplication::onAudio(const int16_t *samples, int count) {
     }
 
     if (m_audioSource == nullptr) return;
+
+    // BeamNG plays the engine while linked; keep feeding so the device stays in step
+    const bool muted = m_host->bridgeActive();
+    if (muted != m_localAudioMuted) {
+        m_audioSource->SetVolume(muted ? 0.0f : 1.0f);
+        m_localAudioMuted = muted;
+    }
 
     m_localAudio.insert(m_localAudio.end(), samples, samples + count);
 
@@ -343,8 +368,11 @@ void EngineSimApplication::run() {
             break;
         }
 
+        // Engine loads requested over the control socket
+        m_host->runPending();
+
         if (m_engine.ProcessKeyDown(ysKey::Code::Return)) {
-            reloadEngine();
+            reloadEngine(m_control->settings().script);
         }
 
         // Everything from here to the end of renderScene() reads or changes the simulation
@@ -370,6 +398,11 @@ void EngineSimApplication::run() {
         m_screenHeight = m_engine.GetGameWindow()->GetScreenHeight();
         m_screenWidth = m_engine.GetGameWindow()->GetScreenWidth();
 
+        if (m_host->bridge() != nullptr) {
+            const std::string bridgeMessage = m_host->bridge()->takeLogMessage();
+            if (!bridgeMessage.empty()) m_infoCluster->setLogMessage(bridgeMessage);
+        }
+
         processEngineInput();
         process();
 
@@ -387,6 +420,7 @@ void EngineSimApplication::run() {
 }
 
 void EngineSimApplication::destroy() {
+    m_control->stop();
     m_host->stop();
     destroyObjects();
 
@@ -654,6 +688,27 @@ void EngineSimApplication::processEngineInput() {
         fineControlInUse = true;
     }
 
+    if (m_engine.ProcessKeyDown(ysKey::Code::M)) {
+        const int currentLayer = getViewParameters().Layer0;
+        if (currentLayer + 1 < m_iceEngine->getMaxDepth()) {
+            setViewLayer(currentLayer + 1);
+        }
+
+        m_infoCluster->setLogMessage("[M] - Set render layer to " + std::to_string(getViewParameters().Layer0));
+    }
+
+    if (m_engine.ProcessKeyDown(ysKey::Code::OEM_Comma)) {
+        if (getViewParameters().Layer0 - 1 >= 0)
+            setViewLayer(getViewParameters().Layer0 - 1);
+
+        m_infoCluster->setLogMessage("[,] - Set render layer to " + std::to_string(getViewParameters().Layer0));
+    }
+
+    if (m_host->bridgeActive()) {
+        // BeamNG owns throttle, ignition, starter, dyno and gearing while linked
+        return;
+    }
+
     const double prevTargetThrottle = m_targetSpeedSetting;
     m_targetSpeedSetting = fineControlMode ? m_targetSpeedSetting : 0.0;
     if (m_engine.IsKeyDown(ysKey::Code::Q)) {
@@ -679,22 +734,6 @@ void EngineSimApplication::processEngineInput() {
     m_speedSetting = m_targetSpeedSetting * 0.5 + 0.5 * m_speedSetting;
 
     m_iceEngine->setSpeedControl(m_speedSetting);
-    if (m_engine.ProcessKeyDown(ysKey::Code::M)) {
-        const int currentLayer = getViewParameters().Layer0;
-        if (currentLayer + 1 < m_iceEngine->getMaxDepth()) {
-            setViewLayer(currentLayer + 1);
-        }
-
-        m_infoCluster->setLogMessage("[M] - Set render layer to " + std::to_string(getViewParameters().Layer0));
-    }
-
-    if (m_engine.ProcessKeyDown(ysKey::Code::OEM_Comma)) {
-        if (getViewParameters().Layer0 - 1 >= 0)
-            setViewLayer(getViewParameters().Layer0 - 1);
-
-        m_infoCluster->setLogMessage("[,] - Set render layer to " + std::to_string(getViewParameters().Layer0));
-    }
-
     if (m_engine.ProcessKeyDown(ysKey::Code::D)) {
         m_simulator->m_dyno.m_enabled = !m_simulator->m_dyno.m_enabled;
 

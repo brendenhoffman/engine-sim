@@ -1,0 +1,347 @@
+#include "control_server.h"
+
+#include "engine.h"
+#include "engine_host.h"
+#include "ignition_module.h"
+#include "simulator.h"
+#include "units.h"
+
+#include <algorithm>
+#include <chrono>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <future>
+#include <iostream>
+#include <poll.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
+#include <vector>
+
+namespace fs = std::filesystem;
+using nlohmann::json;
+
+namespace {
+    json failure(const std::string &message) {
+        return { { "ok", false }, { "error", message } };
+    }
+
+    bool fillAddress(const std::string &path, sockaddr_un *address) {
+        if (path.size() >= sizeof(address->sun_path)) return false;
+
+        std::memset(address, 0, sizeof(*address));
+        address->sun_family = AF_UNIX;
+        std::memcpy(address->sun_path, path.c_str(), path.size() + 1);
+        return true;
+    }
+
+    // Whether something is accepting connections on the socket path
+    bool socketInUse(const std::string &path) {
+        sockaddr_un address;
+        if (!fillAddress(path, &address)) return false;
+
+        const int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        if (fd < 0) return false;
+
+        const bool inUse = connect(fd, reinterpret_cast<sockaddr *>(&address), sizeof(address)) == 0;
+        close(fd);
+        return inUse;
+    }
+
+    void sendLine(int fd, const json &reply) {
+        const std::string line = reply.dump() + "\n";
+        size_t sent = 0;
+        while (sent < line.size()) {
+            const ssize_t n = send(fd, line.data() + sent, line.size() - sent, MSG_NOSIGNAL);
+            if (n <= 0) return; // Client went away; poll() will notice
+            sent += static_cast<size_t>(n);
+        }
+    }
+}
+
+ControlServer::ControlServer(EngineHost *host, HostSettings settings, std::string settingsFile)
+    : m_host(host), m_settingsFile(std::move(settingsFile)), m_settings(std::move(settings))
+{
+    /* void */
+}
+
+ControlServer::~ControlServer() {
+    stop();
+}
+
+std::string ControlServer::defaultSocketPath() {
+    const char *runtime = std::getenv("XDG_RUNTIME_DIR");
+    if (runtime != nullptr && runtime[0] != '\0') {
+        return (fs::path(runtime) / "engine-sim.sock").string();
+    }
+
+    return "/tmp/engine-sim-" + std::to_string(getuid()) + ".sock";
+}
+
+bool ControlServer::start(const std::string &socketPath, std::string *error) {
+    if (m_running) return true;
+
+    sockaddr_un address;
+    if (!fillAddress(socketPath, &address)) {
+        *error = "socket path too long: " + socketPath;
+        return false;
+    }
+
+    if (fs::exists(socketPath)) {
+        if (socketInUse(socketPath)) {
+            *error = "another engine-sim is already running (" + socketPath + ")";
+            return false;
+        }
+        unlink(socketPath.c_str()); // Left behind by a crash
+    }
+
+    const int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0 || bind(fd, reinterpret_cast<sockaddr *>(&address), sizeof(address)) != 0 || listen(fd, 8) != 0) {
+        *error = "could not listen on " + socketPath + ": " + std::strerror(errno);
+        if (fd >= 0) close(fd);
+        return false;
+    }
+
+    m_listenSocket = fd;
+    m_socketPath = socketPath;
+    m_running = true;
+    m_thread = std::thread(&ControlServer::serverThread, this);
+    return true;
+}
+
+void ControlServer::stop() {
+    if (!m_running) return;
+
+    m_running = false;
+    if (m_thread.joinable()) m_thread.join();
+
+    close(m_listenSocket);
+    m_listenSocket = -1;
+    unlink(m_socketPath.c_str());
+}
+
+void ControlServer::serverThread() {
+    struct Client {
+        int fd;
+        std::string buffer;
+    };
+    std::vector<Client> clients;
+
+    while (m_running) {
+        std::vector<pollfd> waitFor;
+        waitFor.push_back({ m_listenSocket, POLLIN, 0 });
+        for (const Client &client : clients) waitFor.push_back({ client.fd, POLLIN, 0 });
+
+        // Wake up regularly so stop() doesn't hang
+        if (poll(waitFor.data(), waitFor.size(), 100) <= 0) continue;
+
+        if (waitFor[0].revents & POLLIN) {
+            const int fd = accept4(m_listenSocket, nullptr, nullptr, SOCK_CLOEXEC);
+            if (fd >= 0) clients.push_back({ fd, "" });
+        }
+
+        for (size_t i = 1; i < waitFor.size(); ++i) {
+            if (waitFor[i].revents == 0) continue;
+            Client &client = clients[i - 1];
+
+            char chunk[4096];
+            const ssize_t n = recv(client.fd, chunk, sizeof(chunk), 0);
+            if (n <= 0 || client.buffer.size() > 1 << 20) {
+                close(client.fd);
+                client.fd = -1;
+                continue;
+            }
+            client.buffer.append(chunk, static_cast<size_t>(n));
+
+            size_t newline;
+            while ((newline = client.buffer.find('\n')) != std::string::npos) {
+                const std::string line = client.buffer.substr(0, newline);
+                client.buffer.erase(0, newline + 1);
+                if (line.find_first_not_of(" \t\r") == std::string::npos) continue;
+
+                const json request = json::parse(line, nullptr, false);
+                json reply = request.is_discarded() ? failure("request is not valid JSON") : handle(request);
+                if (!request.is_discarded() && request.is_object() && request.contains("id")) {
+                    reply["id"] = request["id"];
+                }
+                sendLine(client.fd, reply);
+            }
+        }
+
+        clients.erase(
+            std::remove_if(clients.begin(), clients.end(), [](const Client &c) { return c.fd < 0; }),
+            clients.end());
+    }
+
+    for (const Client &client : clients) close(client.fd);
+}
+
+json ControlServer::handle(const json &request) {
+    if (!request.is_object() || !request.contains("cmd") || !request["cmd"].is_string()) {
+        return failure("request needs a \"cmd\" string");
+    }
+
+    const std::string cmd = request["cmd"].get<std::string>();
+    if (cmd == "status") return status();
+    if (cmd == "get_settings") {
+        std::lock_guard<std::mutex> lock(m_settingsMutex);
+        return { { "ok", true }, { "settings", m_settings.toJson() } };
+    }
+    if (cmd == "set") return setSettings(request);
+    if (cmd == "load") return load(request);
+    if (cmd == "control") return control(request);
+    if (cmd == "retune") {
+        auto lock = m_host->lock();
+        if (m_host->bridge() == nullptr) return failure("the BeamNG bridge isn't running");
+        m_host->bridge()->retune();
+        return { { "ok", true } };
+    }
+
+    return failure("unknown command: " + cmd);
+}
+
+json ControlServer::status() {
+    json reply = { { "ok", true } };
+    {
+        auto lock = m_host->lock();
+        Engine *engine = m_host->engine();
+        Simulator *simulator = m_host->simulator();
+
+        if (engine != nullptr && simulator != nullptr) {
+            reply["engine"] = {
+                { "name", engine->getName() },
+                { "script", m_host->loadedScript() },
+                { "rpm", engine->getRpm() },
+                { "redline_rpm", units::toRpm(engine->getRedline()) },
+                { "throttle", engine->getSpeedControl() },
+                { "ignition", engine->getIgnitionModule()->m_enabled },
+                { "starter", simulator->m_starterMotor.m_enabled },
+                { "simulation_frequency", simulator->getSimulationFrequency() },
+            };
+        }
+        else {
+            reply["engine"] = nullptr;
+        }
+
+        BeamBridge *bridge = m_host->bridge();
+        reply["bridge"] = {
+            { "listening", bridge != nullptr },
+            { "linked", bridge != nullptr && bridge->active() },
+            { "tuning", bridge != nullptr && bridge->tuning() },
+        };
+    }
+
+    reply["performance"] = {
+        { "steps_per_second", m_host->stepsPerSecond() },
+        { "load", m_host->load() },
+    };
+
+    std::lock_guard<std::mutex> lock(m_settingsMutex);
+    reply["settings"] = m_settings.toJson();
+    return reply;
+}
+
+json ControlServer::setSettings(const json &request) {
+    if (!request.contains("settings")) return failure("set needs \"settings\"");
+    if (request["settings"].is_object() && request["settings"].contains("script")) {
+        return failure("use the load command to change the engine");
+    }
+
+    HostSettings updated;
+    {
+        std::lock_guard<std::mutex> lock(m_settingsMutex);
+        updated = m_settings;
+    }
+
+    std::string error;
+    if (!updated.merge(request["settings"], &error)) return failure(error);
+
+    applySettings(m_host, updated);
+    {
+        std::lock_guard<std::mutex> lock(m_settingsMutex);
+        m_settings = updated;
+    }
+    saveSettings();
+
+    std::lock_guard<std::mutex> lock(m_settingsMutex);
+    return { { "ok", true }, { "settings", m_settings.toJson() } };
+}
+
+json ControlServer::load(const json &request) {
+    std::string script;
+    if (request.contains("script")) {
+        if (!request["script"].is_string()) return failure("script must be a string");
+        script = request["script"].get<std::string>();
+    }
+    if (!script.empty() && !fs::path(script).is_absolute()) {
+        return failure("script must be an absolute path");
+    }
+    if (!script.empty() && !fs::exists(script)) {
+        return failure("no such file: " + script);
+    }
+
+    // The owner thread swaps engines (the GUI rebuilds its view of the engine at the same time)
+    auto promise = std::make_shared<std::promise<EngineHost::LoadResult>>();
+    std::future<EngineHost::LoadResult> future = promise->get_future();
+    m_host->post([this, promise, script] { promise->set_value(m_host->loadScript(script)); });
+
+    if (future.wait_for(std::chrono::seconds(60)) != std::future_status::ready) {
+        return failure("timed out waiting for the engine to load");
+    }
+
+    const EngineHost::LoadResult result = future.get();
+    const bool loaded = result.replaced && !result.usedFallback;
+    if (loaded) {
+        {
+            std::lock_guard<std::mutex> lock(m_settingsMutex);
+            m_settings.script = script;
+        }
+        saveSettings();
+    }
+
+    json reply = {
+        { "ok", loaded },
+        { "message", result.message },
+    };
+    if (!loaded) reply["error"] = result.message;
+    if (!result.errors.empty()) reply["errors"] = result.errors;
+    return reply;
+}
+
+json ControlServer::control(const json &request) {
+    auto lock = m_host->lock();
+    Engine *engine = m_host->engine();
+    Simulator *simulator = m_host->simulator();
+    if (engine == nullptr || simulator == nullptr) return failure("no engine loaded");
+    if (m_host->bridgeActive()) return failure("BeamNG is driving the engine");
+
+    // Validate everything before changing anything
+    for (const char *key : { "ignition", "starter" }) {
+        if (request.contains(key) && !request[key].is_boolean()) return failure(std::string(key) + " must be true or false");
+    }
+    if (request.contains("throttle")) {
+        if (!request["throttle"].is_number()) return failure("throttle must be a number");
+        const double throttle = request["throttle"].get<double>();
+        if (throttle < 0 || throttle > 1) return failure("throttle must be between 0 and 1");
+    }
+
+    if (request.contains("ignition")) engine->getIgnitionModule()->m_enabled = request["ignition"].get<bool>();
+    if (request.contains("starter")) simulator->m_starterMotor.m_enabled = request["starter"].get<bool>();
+    if (request.contains("throttle")) engine->setSpeedControl(request["throttle"].get<double>());
+
+    return { { "ok", true } };
+}
+
+void ControlServer::saveSettings() {
+    HostSettings copy;
+    {
+        std::lock_guard<std::mutex> lock(m_settingsMutex);
+        copy = m_settings;
+    }
+
+    std::string error;
+    if (!copy.save(m_settingsFile, &error)) {
+        std::cerr << "engine-sim: " << error << std::endl;
+    }
+}

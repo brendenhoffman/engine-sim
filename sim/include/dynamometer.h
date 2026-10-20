@@ -21,6 +21,10 @@ class Dynamometer : public atg_scs::Constraint {
 
         bool m_hold;
         bool m_enabled;
+
+        // Direction the held crank should turn (+1/-1), or 0 to follow the crank's current
+        // direction. Set when something external (the BeamNG bridge) drives the engine speed.
+        double m_forwardSign;
 };
 
 #endif /* ATG_ENGINE_SIM_DYNAMOMETER_H */

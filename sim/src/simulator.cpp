@@ -1,5 +1,7 @@
 #include "simulator.h"
 
+#include <cmath>
+
 Simulator::Simulator() {
     m_engine = nullptr;
     m_vehicle = nullptr;
@@ -122,8 +124,11 @@ bool Simulator::simulateStep() {
         shaft->m_body.theta = outputShaft->m_body.theta;
     }
 
-    const int index =
-        static_cast<int>(std::floor((DynoTorqueSamples - 1) * outputShaft->getCycleAngle() / (4 * constants::pi)));
+    // Wrap into the ring: an angle outside [0, 4pi) (or NaN) made the catch-up loop below spin forever
+    const double cycleAngle = outputShaft->getCycleAngle();
+    const int index = std::isfinite(cycleAngle)
+        ? ((static_cast<int>(std::floor(DynoTorqueSamples * cycleAngle / (4 * constants::pi))) % DynoTorqueSamples) + DynoTorqueSamples) % DynoTorqueSamples
+        : (m_lastDynoTorqueSample < 0 ? 0 : m_lastDynoTorqueSample);
     const int step = m_engine->isSpinningCw() ? 1 : -1;
     m_dynoTorqueSamples[index] = m_dyno.getTorque();
 

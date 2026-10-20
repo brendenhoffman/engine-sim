@@ -41,6 +41,8 @@ class IgnitionModule : public Part {
 
         bool m_enabled;
 
+        double getRevLimit() const { return m_revLimit; }
+
     protected:
         SparkPlug *getPlug(int i);
 

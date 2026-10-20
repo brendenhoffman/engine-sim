@@ -1,7 +1,9 @@
 // engine-sim-headless: the simulation without any graphics or audio device.
 // Audio goes to listeners (a WAV file for now; the BeamNG bridge later).
 
+#include "control_server.h"
 #include "engine_host.h"
+#include "host_settings.h"
 
 #include "build_info.h"
 #include "engine.h"
@@ -32,6 +34,7 @@ namespace {
         double duration = 0.0;
         bool start = false;
         bool quiet = false;
+        bool bridge = true;
     };
 
     void printUsage(const char *argv0) {
@@ -40,11 +43,12 @@ namespace {
             "\n"
             "Runs the engine simulation without graphics.\n"
             "\n"
-            "  --script PATH     Engine script to load (default: user main.mr, else the shipped one)\n"
+            "  --script PATH     Engine script to load this time (default: the saved one, else main.mr)\n"
             "  --start           Turn on ignition and crank until the engine runs\n"
             "  --throttle X      Hold the throttle at X (0 to 1)\n"
             "  --duration SEC    Exit after SEC seconds (default: run until Ctrl+C)\n"
             "  --wav PATH        Record the engine audio to a WAV file\n"
+            "  --no-bridge       Don't listen for BeamNG on 127.0.0.1:4570\n"
             "  --quiet           Don't print status once a second\n"
             "  --help            Show this help\n",
             argv0);
@@ -64,6 +68,7 @@ namespace {
             if (arg == "--help" || arg == "-h") { printUsage(argv[0]); std::exit(0); }
             else if (arg == "--start") options->start = true;
             else if (arg == "--quiet") options->quiet = true;
+            else if (arg == "--no-bridge") options->bridge = false;
             else if (arg == "--script") { const char *v = value("--script"); if (!v) return false; options->script = v; }
             else if (arg == "--wav") { const char *v = value("--wav"); if (!v) return false; options->wavPath = v; }
             else if (arg == "--throttle") { const char *v = value("--throttle"); if (!v) return false; options->throttle = std::atof(v); }
@@ -132,9 +137,16 @@ int main(int argc, char **argv) {
     std::signal(SIGINT, onSignal);
     std::signal(SIGTERM, onSignal);
 
-    EngineHost host(HostPaths::resolve());
+    const HostPaths paths = HostPaths::resolve();
+    const std::string settingsFile = paths.configPath + "/settings.json";
 
-    const EngineHost::LoadResult load = host.loadScript(options.script);
+    std::string settingsError;
+    const HostSettings settings = HostSettings::load(settingsFile, &settingsError);
+    if (!settingsError.empty()) std::cerr << "engine-sim: " << settingsError << std::endl;
+
+    EngineHost host(paths);
+
+    const EngineHost::LoadResult load = host.loadScript(options.script.empty() ? settings.script : options.script);
     if (!load.errors.empty()) {
         std::cerr << "engine-sim: " << load.script << " failed to load:\n" << load.errors << std::flush;
     }
@@ -143,6 +155,27 @@ int main(int argc, char **argv) {
         return 1;
     }
     std::cerr << "engine-sim " ENGINE_SIM_PROJECT_VERSION ": " << load.message << std::endl;
+
+    if (options.bridge) {
+        if (host.enableBridge()) {
+            std::cerr << "engine-sim: waiting for BeamNG on 127.0.0.1:" << BridgeTransport::DefaultPort << std::endl;
+        }
+        else {
+            std::cerr << "engine-sim: could not listen on port " << BridgeTransport::DefaultPort
+                      << " (another engine-sim running?); BeamNG bridge disabled" << std::endl;
+        }
+    }
+
+    applySettings(&host, settings);
+
+    ControlServer control(&host, settings, settingsFile);
+    std::string controlError;
+    if (control.start(ControlServer::defaultSocketPath(), &controlError)) {
+        std::cerr << "engine-sim: control socket at " << control.socketPath() << std::endl;
+    }
+    else {
+        std::cerr << "engine-sim: " << controlError << "; control socket disabled" << std::endl;
+    }
 
     WavWriter wav;
     if (!options.wavPath.empty() && !wav.open(options.wavPath, EngineHost::AudioSampleRate)) {
@@ -183,15 +216,21 @@ int main(int argc, char **argv) {
 
     while (!g_quit) {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        host.runPending();
 
         const auto now = clock::now();
         const double elapsed = std::chrono::duration<double>(now - startTime).count();
         if (options.duration > 0 && elapsed >= options.duration) break;
 
         double rpm;
+        std::string bridgeMessage;
         {
             auto lock = host.lock();
             rpm = host.engine()->getRpm();
+            if (host.bridge() != nullptr) bridgeMessage = host.bridge()->takeLogMessage();
+
+            // BeamNG drives the engine while linked
+            if (host.bridgeActive()) cranking = false;
 
             // Let go of the starter once the engine is clearly running on its own
             if (cranking && (rpm > 2.5 * starterSpeedRpm || elapsed > 5.0)) {
@@ -200,16 +239,21 @@ int main(int argc, char **argv) {
             }
         }
 
+        if (!bridgeMessage.empty()) std::fprintf(stderr, "%6.1fs  %s\n", elapsed, bridgeMessage.c_str());
+
         const double sinceStatus = std::chrono::duration<double>(now - lastStatus).count();
         if (!options.quiet && sinceStatus >= 1.0) {
             const double load = busySeconds.exchange(0) / sinceStatus;
             const long long steps = iterations.exchange(0);
-            std::fprintf(stderr, "%6.1fs  %6.0f rpm  %7.0f steps/s  load %3.0f%%%s\n",
-                elapsed, rpm, steps / sinceStatus, load * 100, cranking ? "  cranking" : "");
+            std::fprintf(stderr, "%6.1fs  %6.0f rpm  %7.0f steps/s  load %3.0f%%%s%s\n",
+                elapsed, rpm, steps / sinceStatus, load * 100,
+                cranking ? "  cranking" : "",
+                host.bridgeActive() ? "  [BeamNG]" : "");
             lastStatus = now;
         }
     }
 
+    control.stop();
     host.stop();
     wav.close();
 

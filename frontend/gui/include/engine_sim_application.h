@@ -24,7 +24,9 @@
 #include "transmission.h"
 
 #include "delta.h"
+#include "control_server.h"
 #include "engine_host.h"
+#include "host_settings.h"
 
 #include <cstdint>
 #include <deque>
@@ -135,6 +137,9 @@ class EngineSimApplication {
 
         // Owns the engine and runs the simulation; the pointers below are views into it
         std::unique_ptr<EngineHost> m_host;
+        std::unique_ptr<ControlServer> m_control;
+        HostSettings m_startupSettings;
+        std::string m_settingsFile;
 
         std::string m_assetPath;
 
@@ -182,6 +187,7 @@ class EngineSimApplication {
 
         // Samples from the simulation thread waiting for room in the output device
         std::deque<int16_t> m_localAudio;
+        bool m_localAudioMuted = false;
 
         int m_oscillatorSampleOffset;
         int m_screen;
