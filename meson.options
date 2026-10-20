@@ -2,6 +2,10 @@ option('gui', type: 'feature', value: 'enabled',
   description: 'Build the full GUI (needs SDL and OpenGL)')
 option('headless', type: 'boolean', value: true,
   description: 'Build engine-sim-headless (no graphics, no SDL)')
+option('control_panel', type: 'feature', value: 'auto',
+  description: 'Build engine-sim-control, the settings window (needs SDL3; fetches Dear ImGui)')
+option('beamng_plugin', type: 'boolean', value: true,
+  description: 'Build the FMOD plugin that plays engine-sim inside BeamNG')
 option('tests', type: 'feature', value: 'auto',
   description: 'Build unit tests (needs gtest)')
 option('data_root', type: 'string', value: '',

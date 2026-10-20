@@ -165,6 +165,17 @@ void BridgeTransport::sendProfile(const float *values, int count) {
     sendto(m_socket, buffer, 4 + 4 * count, 0, reinterpret_cast<const sockaddr *>(&to), sizeof(to));
 }
 
+void BridgeTransport::sendSoundConfig(bool neutralEq, bool intake, bool exhaust) {
+    sockaddr_in to;
+    if (m_socket < 0 || !peer(&to)) return;
+
+    const float values[4] = { 1, neutralEq ? 1.0f : 0.0f, intake ? 1.0f : 0.0f, exhaust ? 1.0f : 0.0f };
+    char buffer[4 + sizeof(values)];
+    std::memcpy(buffer, "BESC", 4);
+    std::memcpy(buffer + 4, values, sizeof(values));
+    sendto(m_socket, buffer, sizeof(buffer), 0, reinterpret_cast<const sockaddr *>(&to), sizeof(to));
+}
+
 void BridgeTransport::sendAudio(const int16_t *samples, int count, float gain) {
     if (m_socket < 0) return;
 

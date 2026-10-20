@@ -1,0 +1,5 @@
+/* Export only the FMOD plugin entry point; keep the bundled C++ runtime and Zydis private */
+{
+  global: FMODGetDSPDescription;
+  local: *;
+};

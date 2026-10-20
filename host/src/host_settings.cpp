@@ -41,11 +41,15 @@ json HostSettings::toJson() const {
     return {
         { "script", script },
         { "simulation_frequency", simulationFrequency },
+        { "audio", { { "headroom_db", headroomDb } } },
         { "bridge", {
             { "connect", bridge.connect },
             { "volume", bridge.volume },
             { "beam_idle_rpm", bridge.beamIdleRpm },
             { "tune_beam_engine", bridge.tuneBeamEngine },
+            { "neutral_eq", bridge.neutralEq },
+            { "intake_sound", bridge.intakeSound },
+            { "exhaust_sound", bridge.exhaustSound },
         } },
     };
 }
@@ -60,6 +64,15 @@ bool HostSettings::merge(const json &object, std::string *error) {
     if (!readField(object, "script", &updated.script, error)) return false;
     if (!readField(object, "simulation_frequency", &updated.simulationFrequency, error, 0, 400000)) return false;
 
+    const auto audioIt = object.find("audio");
+    if (audioIt != object.end()) {
+        if (!audioIt->is_object()) {
+            *error = "audio must be an object";
+            return false;
+        }
+        if (!readField(*audioIt, "headroom_db", &updated.headroomDb, error, 0, 24)) return false;
+    }
+
     const auto bridgeIt = object.find("bridge");
     if (bridgeIt != object.end()) {
         if (!bridgeIt->is_object()) {
@@ -70,6 +83,9 @@ bool HostSettings::merge(const json &object, std::string *error) {
         if (!readField(*bridgeIt, "volume", &updated.bridge.volume, error, 0, 4)) return false;
         if (!readField(*bridgeIt, "beam_idle_rpm", &updated.bridge.beamIdleRpm, error, 0, 20000)) return false;
         if (!readField(*bridgeIt, "tune_beam_engine", &updated.bridge.tuneBeamEngine, error)) return false;
+        if (!readField(*bridgeIt, "neutral_eq", &updated.bridge.neutralEq, error)) return false;
+        if (!readField(*bridgeIt, "intake_sound", &updated.bridge.intakeSound, error)) return false;
+        if (!readField(*bridgeIt, "exhaust_sound", &updated.bridge.exhaustSound, error)) return false;
     }
 
     if (updated.simulationFrequency != 0 && updated.simulationFrequency < 400) {
@@ -133,4 +149,5 @@ void applySettings(EngineHost *host, const HostSettings &settings) {
     }
 
     host->setSimulationFrequencyOverride(settings.simulationFrequency);
+    host->setOutputHeadroom(settings.headroomDb);
 }

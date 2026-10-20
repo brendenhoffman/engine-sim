@@ -13,6 +13,9 @@ class EngineHost;
 struct HostSettings {
     std::string script;                 // Engine script to load; empty for the default main.mr
     double simulationFrequency = 0;     // Overrides the engine's own rate when non-zero (Hz)
+    // Lowers the synthesizer's level so its peaks don't clip. Upstream (0 dB) clips 1.5-3.5% of
+    // samples; 3 dB nearly stops it and 6 dB does.
+    double headroomDb = 6;
     BeamBridge::Settings bridge;
 
     nlohmann::json toJson() const;

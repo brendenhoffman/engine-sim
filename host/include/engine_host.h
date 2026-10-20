@@ -72,7 +72,8 @@ public:
     // The user's main.mr if it exists, otherwise the shipped one
     std::string defaultScriptPath() const;
 
-    // Compiles a script and swaps its engine in. Compilation runs without the lock, so the
+    // Compiles a script and swaps its engine in. Either a main.mr-style script, or an engine
+    // file defining `main` (it gets wrapped in a generated main.mr). Compilation runs without the lock, so the
     // current engine keeps running meanwhile; only the swap takes it. If the script fails, the
     // current engine is kept, or with none loaded yet the shipped default is tried.
     // Must not be called while holding lock().
@@ -113,6 +114,11 @@ public:
 
     // 0 uses each engine's own rate. Applies now and to engines loaded later.
     void setSimulationFrequencyOverride(double hz);
+
+    // Lowers the synthesizer's level target by this many dB so its peaks stop clipping.
+    // Applies now and to engines loaded later.
+    void setOutputHeadroom(double db);
+    double outputHeadroom() const { return m_outputHeadroomDb; }
     double simulationFrequencyOverride() const { return m_frequencyOverride; }
 
     void setSimulationSpeed(double speed) { m_simulationSpeed = speed; }
@@ -135,7 +141,10 @@ private:
         ApplicationSettings settings;
     };
 
-    bool compile(const std::string &scriptPath, const std::string &logPath, Compiled *out, std::string *errors);
+    // `noEngine` is set when the script compiled fine but never created an engine (an engine
+    // file rather than a main.mr), so the caller can retry it wrapped
+    bool compile(const std::string &scriptPath, const std::string &logPath, Compiled *out, std::string *errors, bool *noEngine = nullptr);
+    std::string writeWrapper(const std::string &engineFile);
     bool prepare(Compiled *compiled, Simulator **simulator, std::string *errors);
     void install(const Compiled &compiled, Simulator *simulator, const std::string &script);
     static void release(Engine *engine, Vehicle *vehicle, Transmission *transmission, Simulator *simulator);
@@ -159,6 +168,7 @@ private:
 
     double m_simulationSpeed = 1.0;
     double m_frequencyOverride = 0;
+    double m_outputHeadroomDb = 6;
     bool m_paused = false;
     bool m_stepOnce = false;
 

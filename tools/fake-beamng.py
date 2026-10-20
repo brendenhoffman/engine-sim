@@ -39,6 +39,7 @@ def main():
     next_send = start
     next_report = start + 1.0
     torques, keeps, profiles = [], 0, 0
+    sound_config = None
     audio_samples, audio_sq, audio_peak = 0, 0.0, 0.0
 
     while time.monotonic() - start < args.seconds:
@@ -64,6 +65,8 @@ def main():
                 keeps += 1
             elif tag == b"BESP":
                 profiles += 1
+            elif tag == b"BESC" and len(data) >= 20:
+                sound_config = struct.unpack("<4f", data[4:20])
 
         while True:
             try:
@@ -81,8 +84,9 @@ def main():
             rpm = args.rpm if args.rpm is not None else 3250 + 1750 * math.sin(t * 0.6)
             torque = "%7.1f Nm" % (sum(torques) / len(torques)) if torques else "     -    "
             rms = math.sqrt(audio_sq / audio_samples) if audio_samples else 0.0
-            print("%5.1fs  rpm %5.0f  torque %s  keep-beam %3d  profile %d  audio %5d samples/s rms %.3f peak %.2f"
-                  % (t, rpm, torque, keeps, profiles, audio_samples, rms, audio_peak))
+            config = ("flat-eq %s intake %s exhaust %s" % tuple("on" if v else "off" for v in sound_config[1:])) if sound_config else "-"
+            print("%5.1fs  rpm %5.0f  torque %s  keep-beam %3d  profile %d  sound [%s]  audio %5d samples/s rms %.3f peak %.2f"
+                  % (t, rpm, torque, keeps, profiles, config, audio_samples, rms, audio_peak))
             torques, keeps, profiles = [], 0, 0
             audio_samples, audio_sq, audio_peak = 0, 0.0, 0.0
             next_report += 1.0

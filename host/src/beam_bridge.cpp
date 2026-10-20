@@ -160,6 +160,8 @@ void BeamBridge::beforeFrame(Simulator *simulator, Engine *engine, double dt) {
             const float off[2] = { 0, m_profileId };
             m_transport->sendProfile(off, 2);
         }
+
+        m_transport->sendSoundConfig(m_settings.neutralEq, m_settings.intakeSound, m_settings.exhaustSound);
     }
 }
 
