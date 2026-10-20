@@ -22,6 +22,8 @@ class EngineHost;
 //   {"cmd":"retune"}                                   re-profile the engine for BeamNG
 //   {"cmd":"control","ignition":true,"starter":false,"throttle":0.2}
 //   {"cmd":"shutdown"}                                 ask engine-sim to exit
+//   {"cmd":"synth","volume":0.8,"convolution":1,...}   engine sound mix (per engine, not saved);
+//                                                      "reset":true goes back to the engine's own
 //
 // Replies carry "ok" (and "error" when false), plus "id" if the request had one.
 // Try it from a shell:  echo '{"cmd":"status"}' | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/engine-sim.sock
@@ -60,6 +62,7 @@ private:
     nlohmann::json setSettings(const nlohmann::json &request);
     nlohmann::json load(const nlohmann::json &request);
     nlohmann::json control(const nlohmann::json &request);
+    nlohmann::json synth(const nlohmann::json &request);
     void saveSettings();
 
 private:

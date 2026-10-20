@@ -44,12 +44,14 @@ json HostSettings::toJson() const {
         { "audio", { { "headroom_db", headroomDb } } },
         { "bridge", {
             { "connect", bridge.connect },
+            { "drive_car", bridge.driveCar },
             { "volume", bridge.volume },
             { "beam_idle_rpm", bridge.beamIdleRpm },
             { "tune_beam_engine", bridge.tuneBeamEngine },
             { "neutral_eq", bridge.neutralEq },
             { "intake_sound", bridge.intakeSound },
             { "exhaust_sound", bridge.exhaustSound },
+            { "game_low_cut", bridge.keepGameLowCut },
         } },
     };
 }
@@ -80,12 +82,14 @@ bool HostSettings::merge(const json &object, std::string *error) {
             return false;
         }
         if (!readField(*bridgeIt, "connect", &updated.bridge.connect, error)) return false;
+        if (!readField(*bridgeIt, "drive_car", &updated.bridge.driveCar, error)) return false;
         if (!readField(*bridgeIt, "volume", &updated.bridge.volume, error, 0, 4)) return false;
         if (!readField(*bridgeIt, "beam_idle_rpm", &updated.bridge.beamIdleRpm, error, 0, 20000)) return false;
         if (!readField(*bridgeIt, "tune_beam_engine", &updated.bridge.tuneBeamEngine, error)) return false;
         if (!readField(*bridgeIt, "neutral_eq", &updated.bridge.neutralEq, error)) return false;
         if (!readField(*bridgeIt, "intake_sound", &updated.bridge.intakeSound, error)) return false;
         if (!readField(*bridgeIt, "exhaust_sound", &updated.bridge.exhaustSound, error)) return false;
+        if (!readField(*bridgeIt, "game_low_cut", &updated.bridge.keepGameLowCut, error)) return false;
     }
 
     if (updated.simulationFrequency != 0 && updated.simulationFrequency < 400) {

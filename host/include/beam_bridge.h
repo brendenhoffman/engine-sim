@@ -23,12 +23,14 @@ class BeamBridge {
 public:
     struct Settings {
         bool connect = true;            // Follow BeamNG when it's sending
+        bool driveCar = false;          // Replace the car's engine torque with engine-sim's (off: sound only)
         float volume = 0.20f;           // Gain of the audio sent to BeamNG (BeamEngineSim used 0.10 without headroom)
         float beamIdleRpm = 1100.0f;    // Below this, BeamNG keeps its own torque (steadier idle)
         bool tuneBeamEngine = false;    // Profile the engine and retune the car to match
         bool neutralEq = true;          // Flatten the car's sound EQ (tuned for its own samples) while linked
         bool intakeSound = true;        // Play engine-sim through the car's intake (engine) sound event
         bool exhaustSound = true;       // ...and through its exhaust sound event
+        bool keepGameLowCut = false;    // Keep the game's ~90-190 Hz high-pass on engine sound (thins engine-sim out)
     };
 
     explicit BeamBridge(BridgeTransport *transport);

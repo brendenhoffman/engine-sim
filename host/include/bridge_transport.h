@@ -1,10 +1,13 @@
 #ifndef ATG_ENGINE_SIM_HOST_BRIDGE_TRANSPORT_H
 #define ATG_ENGINE_SIM_HOST_BRIDGE_TRANSPORT_H
 
+#include <nlohmann/json.hpp>
+
 #include <atomic>
 #include <cstdint>
 #include <deque>
 #include <mutex>
+#include <string>
 #include <netinet/in.h>
 #include <thread>
 
@@ -14,6 +17,7 @@
 //   BeamNG -> engine-sim (port 4570)
 //     "BES1" rpm, throttle, ignition, volume, pan    vehicle state, ~60 Hz
 //     "BESH"                                          heartbeat while the game is paused
+//     "BESV" {json}                                   the player's car and engine, every ~3 s
 //
 //   engine-sim -> BeamNG (reply to the sender of BES1)
 //     "BES1" torque_nm, rpm     torque for BeamNG's engine
@@ -23,6 +27,7 @@
 //
 //   engine-sim -> FMOD plugin (port 4571)
 //     "BESF" samples...         mono 44.1 kHz audio
+//     "BESX" 1, keep_low_cut    plugin settings, ~2 Hz
 //
 // New message types get new tags; receivers ignore tags they don't know.
 class BridgeTransport {
@@ -58,6 +63,12 @@ public:
     // packet interval ahead. Returns false if nothing has been received yet.
     bool latest(Input *input, double *ageSeconds, float *smoothRpm);
 
+    // Appends each newly seen engine's description to this file (JSON lines). Set before start().
+    void setVehicleLog(std::string path) { m_vehicleLogPath = std::move(path); }
+
+    // Latest description of the player's car ("BESV"); false if none has arrived
+    bool vehicleInfo(nlohmann::json *info, double *ageSeconds);
+
     // Least-squares slope of BeamNG's rpm over the last `windowSeconds`, in rpm/s
     double rpmRate(double windowSeconds);
 
@@ -65,6 +76,7 @@ public:
     void sendTorque(float torqueNm, float rpm);
     void sendProfile(const float *values, int count);
     void sendSoundConfig(bool neutralEq, bool intake, bool exhaust);
+    void sendPluginConfig(bool keepGameLowCut);
 
     // Queues audio for the plugin; a sender thread paces it out at 44.1 kHz
     void sendAudio(const int16_t *samples, int count, float gain);
@@ -86,6 +98,11 @@ private:
     bool m_hasPeer = false;
     Input m_latest;
     double m_latestTime = -1;
+
+    std::string m_vehicleLogPath;
+    std::string m_lastLoggedEngine;
+    nlohmann::json m_vehicleInfo;
+    double m_vehicleInfoTime = -1;
 
     static constexpr int HistorySize = 64;
     struct Sample { double time; float rpm; };

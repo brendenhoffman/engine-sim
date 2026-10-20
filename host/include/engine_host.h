@@ -111,6 +111,7 @@ public:
     const ApplicationSettings &applicationSettings() const { return m_applicationSettings; }
     const std::string &loadedScript() const { return m_loadedScript; }
     BeamBridge *bridge() { return m_bridge.get(); } // nullptr unless enableBridge() succeeded
+    BridgeTransport *bridgeTransport() { return m_transport.get(); } // Thread-safe on its own
 
     // 0 uses each engine's own rate. Applies now and to engines loaded later.
     void setSimulationFrequencyOverride(double hz);

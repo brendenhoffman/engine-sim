@@ -6,9 +6,11 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <vector>
 
 namespace {
     double nowSeconds() {
@@ -76,7 +78,9 @@ void BridgeTransport::stop() {
 }
 
 void BridgeTransport::receiveThread() {
-    char buffer[64];
+    // Big enough for the vehicle description; everything else is tiny
+    std::vector<char> storage(65536);
+    char *buffer = storage.data();
     pollfd waitFor{ m_socket, POLLIN, 0 };
 
     while (m_running) {
@@ -85,8 +89,27 @@ void BridgeTransport::receiveThread() {
 
         sockaddr_in from{};
         socklen_t fromLength = sizeof(from);
-        const ssize_t n = recvfrom(m_socket, buffer, sizeof(buffer), 0, reinterpret_cast<sockaddr *>(&from), &fromLength);
+        const ssize_t n = recvfrom(m_socket, buffer, storage.size(), 0, reinterpret_cast<sockaddr *>(&from), &fromLength);
         if (n < 4) continue;
+
+        if (std::memcmp(buffer, "BESV", 4) == 0) {
+            nlohmann::json info = nlohmann::json::parse(buffer + 4, buffer + n, nullptr, false);
+            if (info.is_object()) {
+                // A record of the engines seen, for tuning engine generation against real cars
+                const nlohmann::json engine = info.value("engine", nlohmann::json());
+                const std::string key = info.value("vehicle", nlohmann::json::object()).value("directory", std::string())
+                    + "/" + (engine.is_object() ? engine.value("part", std::string()) : std::string("none"));
+                if (!m_vehicleLogPath.empty() && key != m_lastLoggedEngine) {
+                    m_lastLoggedEngine = key;
+                    std::ofstream(m_vehicleLogPath, std::ios::app) << info.dump() << '\n';
+                }
+
+                std::lock_guard<std::mutex> lock(m_inputMutex);
+                m_vehicleInfo = std::move(info);
+                m_vehicleInfoTime = nowSeconds();
+            }
+            continue;
+        }
 
         if (n == 4 && std::memcmp(buffer, "BESH", 4) == 0) {
             // Paused game: keeps a live link alive, never starts one
@@ -130,6 +153,15 @@ bool BridgeTransport::latest(Input *input, double *ageSeconds, float *smoothRpm)
         }
     }
 
+    return true;
+}
+
+bool BridgeTransport::vehicleInfo(nlohmann::json *info, double *ageSeconds) {
+    std::lock_guard<std::mutex> lock(m_inputMutex);
+    if (m_vehicleInfoTime < 0) return false;
+
+    *info = m_vehicleInfo;
+    *ageSeconds = nowSeconds() - m_vehicleInfoTime;
     return true;
 }
 
@@ -186,6 +218,17 @@ void BridgeTransport::sendSoundConfig(bool neutralEq, bool intake, bool exhaust)
     std::memcpy(buffer, "BESC", 4);
     std::memcpy(buffer + 4, values, sizeof(values));
     sendto(m_socket, buffer, sizeof(buffer), 0, reinterpret_cast<const sockaddr *>(&to), sizeof(to));
+}
+
+void BridgeTransport::sendPluginConfig(bool keepGameLowCut) {
+    if (m_socket < 0) return;
+
+    const sockaddr_in plugin = localhost(m_audioPort);
+    const float values[2] = { 1, keepGameLowCut ? 1.0f : 0.0f };
+    char buffer[4 + sizeof(values)];
+    std::memcpy(buffer, "BESX", 4);
+    std::memcpy(buffer + 4, values, sizeof(values));
+    sendto(m_socket, buffer, sizeof(buffer), 0, reinterpret_cast<const sockaddr *>(&plugin), sizeof(plugin));
 }
 
 void BridgeTransport::sendAudio(const int16_t *samples, int count, float gain) {

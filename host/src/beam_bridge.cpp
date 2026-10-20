@@ -144,7 +144,9 @@ void BeamBridge::beforeFrame(Simulator *simulator, Engine *engine, double dt) {
     if (m_torqueSendTimer >= 1 / 250.0) {
         m_torqueSendTimer = 0;
 
-        const bool beamIdles = sweeping || m_input.rpm < m_settings.beamIdleRpm || m_input.throttle < 0.02f;
+        // Sound only unless asked; even then BeamNG keeps idle and closed-throttle torque
+        const bool beamIdles = !m_settings.driveCar || sweeping
+            || m_input.rpm < m_settings.beamIdleRpm || m_input.throttle < 0.02f;
         m_transport->sendTorque(
             beamIdles ? std::nanf("") : static_cast<float>(units::convert(engineTorque, units::Nm)),
             static_cast<float>(units::toRpm(m_rampTo)));
@@ -162,6 +164,7 @@ void BeamBridge::beforeFrame(Simulator *simulator, Engine *engine, double dt) {
         }
 
         m_transport->sendSoundConfig(m_settings.neutralEq, m_settings.intakeSound, m_settings.exhaustSound);
+        m_transport->sendPluginConfig(m_settings.keepGameLowCut);
     }
 }
 

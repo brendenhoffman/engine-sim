@@ -342,6 +342,7 @@ bool EngineHost::enableBridge(int port, int audioPort) {
     if (m_bridge) return true;
 
     auto transport = std::make_unique<BridgeTransport>();
+    transport->setVehicleLog((fs::path(m_paths.outputPath) / "beamng-vehicles.jsonl").string());
     if (!transport->start(port, audioPort)) return false;
 
     m_transport = std::move(transport);

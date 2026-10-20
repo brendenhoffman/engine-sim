@@ -10,10 +10,25 @@ that engine sound arrives.
 """
 
 import argparse
+import json
 import math
 import socket
 import struct
 import time
+
+
+# What the mod's game-engine extension sends for a stock car (values are illustrative)
+SAMPLE_VEHICLE = {
+    "v": 1,
+    "vehicle": {"id": 12345, "directory": "fullsize", "model": "Gavril Grand Marshal"},
+    "engine": {
+        "part": "fullsize_engine_v8_5.5", "name": "5.5L V8 Engine", "cylinders": 8, "fuel": "gasoline",
+        "idle_rpm": 650, "max_rpm": 5500, "rev_limiter_rpm": 5400, "inertia": 0.18,
+        "friction": 18, "dynamic_friction": 0.025, "engine_brake_torque": 46,
+        "torque": [[0, 0], [500, 260], [1000, 360], [2000, 420], [3000, 440], [4000, 410], [5000, 350], [6000, 240]],
+        "placement": "outside", "engine_sample": "v8_crossplane_intake", "exhaust_sample": "v8_crossplane_exhaust",
+    },
+}
 
 
 def main():
@@ -25,6 +40,7 @@ def main():
     parser.add_argument("--throttle", type=float, default=0.5)
     parser.add_argument("--seconds", type=float, default=20.0)
     parser.add_argument("--rate", type=float, default=60.0, help="packets per second (BeamNG sends one per graphics frame)")
+    parser.add_argument("--no-vehicle", action="store_true", help="don't send the sample car description")
     args = parser.parse_args()
 
     link = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -38,6 +54,7 @@ def main():
     start = time.monotonic()
     next_send = start
     next_report = start + 1.0
+    next_vehicle = start
     torques, keeps, profiles = [], 0, 0
     sound_config = None
     audio_samples, audio_sq, audio_peak = 0, 0.0, 0.0
@@ -50,6 +67,10 @@ def main():
             rpm = args.rpm if args.rpm is not None else 3250 + 1750 * math.sin(t * 0.6)
             link.send(b"BES1" + struct.pack("<5f", rpm, args.throttle, 1.0, 1.0, 0.0))
             next_send += 1.0 / args.rate
+
+        if not args.no_vehicle and now >= next_vehicle:
+            link.send(b"BESV" + json.dumps(SAMPLE_VEHICLE).encode())
+            next_vehicle += 3.0
 
         while True:
             try:

@@ -80,6 +80,20 @@ using GetGroupNameFn = int (*)(void *group, char *name, int length);
 using DspGetInfoFn = int (*)(void *dsp, char *name, unsigned int *version, int *channels, int *configWidth, int *configHeight);
 using DspGetChannelFormatFn = int (*)(void *dsp, unsigned int *channelMask, int *channels, int *speakerMode);
 using DspGetBypassFn = int (*)(void *dsp, bool *bypass);
+using DspSetBypassFn = int (*)(void *dsp, bool bypass);
+using ChannelGetChannelGroupFn = int (*)(void *channel, void **group);
+
+// FMOD_DSP_PARAMETER_DESC up to the fields we read
+struct FmodDspParameterDesc {
+    int type; // 0 float, 1 int, 2 bool, 3 data
+    char name[16];
+    char label[16];
+};
+using DspGetNumParametersFn = int (*)(void *dsp, int *count);
+using DspGetParameterInfoFn = int (*)(void *dsp, int index, FmodDspParameterDesc **desc);
+using DspGetParameterFloatFn = int (*)(void *dsp, int index, float *value, char *valueString, int length);
+using DspGetParameterIntFn = int (*)(void *dsp, int index, int *value, char *valueString, int length);
+using DspGetParameterBoolFn = int (*)(void *dsp, int index, bool *value, char *valueString, int length);
 
 namespace fmod_symbols {
     constexpr const char *CreateSound = "_ZN4FMOD6System11createSoundEPKcjP22FMOD_CREATESOUNDEXINFOPPNS_5SoundE";
@@ -95,6 +109,13 @@ namespace fmod_symbols {
     constexpr const char *DspGetInfo = "_ZN4FMOD3DSP7getInfoEPcPjPiS3_S3_";
     constexpr const char *DspGetChannelFormat = "_ZN4FMOD3DSP16getChannelFormatEPjPiP16FMOD_SPEAKERMODE";
     constexpr const char *DspGetBypass = "_ZN4FMOD3DSP9getBypassEPb";
+    constexpr const char *DspSetBypass = "_ZN4FMOD3DSP9setBypassEb";
+    constexpr const char *ChannelGetChannelGroup = "_ZN4FMOD7Channel15getChannelGroupEPPNS_12ChannelGroupE";
+    constexpr const char *DspGetNumParameters = "_ZN4FMOD3DSP16getNumParametersEPi";
+    constexpr const char *DspGetParameterInfo = "_ZN4FMOD3DSP16getParameterInfoEiPP23FMOD_DSP_PARAMETER_DESC";
+    constexpr const char *DspGetParameterFloat = "_ZN4FMOD3DSP17getParameterFloatEiPfPci";
+    constexpr const char *DspGetParameterInt = "_ZN4FMOD3DSP15getParameterIntEiPiPci";
+    constexpr const char *DspGetParameterBool = "_ZN4FMOD3DSP16getParameterBoolEiPbPci";
 }
 
 #endif /* ENGINE_SIM_BEAMNG_FMOD_ABI_H */

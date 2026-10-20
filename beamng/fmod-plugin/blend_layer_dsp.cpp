@@ -20,6 +20,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -33,6 +34,7 @@
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #define EXPORT extern "C" __attribute__((visibility("default")))
 
@@ -46,6 +48,10 @@ std::mutex s_logMutex;
 void logf(const char *fmt, ...) {
     std::lock_guard<std::mutex> lock(s_logMutex);
     if (s_log == nullptr) return;
+
+    // Seconds since the plugin loaded, to line up with BeamNG's own log
+    static const auto start = std::chrono::steady_clock::now();
+    std::fprintf(s_log, "%8.3f ", std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
 
     va_list args;
     va_start(args, fmt);
@@ -91,6 +97,9 @@ float s_ring[RingSize];
 std::atomic<long long> s_written{0};
 std::atomic<unsigned long long> s_audioTime{0};
 
+// From engine-sim's "BESX" packets: keep the game's low-cut (high-pass) filter on engine sound
+std::atomic<bool> s_keepLowCut{false};
+
 void receiverThread() {
     const int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
     sockaddr_in addr{};
@@ -107,6 +116,12 @@ void receiverThread() {
     char buffer[8192];
     for (;;) {
         const ssize_t n = recv(fd, buffer, sizeof(buffer), 0);
+        if (n >= 12 && std::memcmp(buffer, "BESX", 4) == 0) {
+            float values[2]; // version, keep low cut
+            std::memcpy(values, buffer + 4, sizeof(values));
+            s_keepLowCut = values[1] != 0;
+            continue;
+        }
         if (n < 4 || std::memcmp(buffer, "BESF", 4) != 0) continue;
 
         const int count = static_cast<int>((n - 4) / 4);
@@ -260,6 +275,142 @@ GetGroupNameFn s_getGroupName;
 DspGetInfoFn s_dspGetInfo;
 DspGetChannelFormatFn s_dspGetChannelFormat;
 DspGetBypassFn s_dspGetBypass;
+DspGetNumParametersFn s_dspGetNumParameters;
+DspGetParameterInfoFn s_dspGetParameterInfo;
+DspGetParameterFloatFn s_dspGetParameterFloat;
+DspGetParameterIntFn s_dspGetParameterInt;
+DspGetParameterBoolFn s_dspGetParameterBool;
+
+DspSetBypassFn s_dspSetBypass;
+ChannelGetChannelGroupFn s_channelGetChannelGroup;
+
+// Marker channels of the current generation. FMOD validates channel handles (a stale one just
+// returns an error) but not group pointers, so event buses are always found through these.
+std::vector<void *> s_markerPlayChannels;
+bool s_lowCutDirty = false;   // New channels since the low cut was last applied
+bool s_lowCutBypassed = false;
+
+unsigned long long s_lastParameterDump = 0;
+int s_parameterDumps = 0;
+
+void logParameters(void *dsp) {
+    if (!s_dspGetNumParameters || !s_dspGetParameterInfo) return;
+
+    int count = 0;
+    s_dspGetNumParameters(dsp, &count);
+    std::string line;
+    for (int i = 0; i < count && i < 24; ++i) {
+        FmodDspParameterDesc *desc = nullptr;
+        if (s_dspGetParameterInfo(dsp, i, &desc) != FMOD_OK || !desc) continue;
+
+        char value[32] = "?";
+        if (desc->type == 0 && s_dspGetParameterFloat) { float v; s_dspGetParameterFloat(dsp, i, &v, value, sizeof(value)); }
+        else if (desc->type == 1 && s_dspGetParameterInt) { int v; s_dspGetParameterInt(dsp, i, &v, value, sizeof(value)); }
+        else if (desc->type == 2 && s_dspGetParameterBool) { bool v; s_dspGetParameterBool(dsp, i, &v, value, sizeof(value)); }
+        else continue;
+
+        char name[17] = {}, label[17] = {};
+        std::memcpy(name, desc->name, 16);
+        std::memcpy(label, desc->label, 16);
+        line += std::string(" ") + name + "=" + value + label;
+    }
+    logf("      params:%s\n", line.c_str());
+}
+
+// The sound event's own bus: the first "Master Bus" above a marker's group
+void *findEventBus(void *group) {
+    void *current = group;
+    for (int depth = 0; current != nullptr && depth < 12; ++depth) {
+        char name[64] = {};
+        if (s_getGroupName && s_getGroupName(current, name, sizeof(name)) == FMOD_OK && std::strcmp(name, "Master Bus") == 0) {
+            return current;
+        }
+        void *parent = nullptr;
+        if (!s_getParentGroup || s_getParentGroup(current, &parent) != FMOD_OK) return nullptr;
+        current = parent;
+    }
+    return nullptr;
+}
+
+// Event buses of the live marker channels (stale channels are skipped). Needs s_mutex.
+std::vector<void *> liveEventBuses() {
+    std::vector<void *> buses;
+    if (!s_channelGetChannelGroup) return buses;
+
+    for (void *channel : s_markerPlayChannels) {
+        void *group = nullptr;
+        if (s_channelGetChannelGroup(channel, &group) != FMOD_OK || !group) continue;
+        void *bus = findEventBus(group);
+        if (bus && std::find(buses.begin(), buses.end(), bus) == buses.end()) buses.push_back(bus);
+    }
+    return buses;
+}
+
+std::string dspName(void *dsp) {
+    char name[32] = {};
+    unsigned int version = 0;
+    int channels = 0, width = 0, height = 0;
+    s_dspGetInfo(dsp, name, &version, &channels, &width, &height);
+    return name;
+}
+
+// The game's sound events high-pass engine sound at ~90-190 Hz, which takes the body out of
+// engine-sim's output. While engine-sim is playing, bypass it (unless asked to keep it); put
+// it back when engine-sim stops so stock sound is untouched. Game thread only. Needs s_mutex.
+void applyLowCut() {
+    if (!s_dspSetBypass || !s_getNumDsps || !s_getDsp || !s_dspGetInfo) return;
+
+    const bool engineSimPlaying = nowMs() - s_audioTime.load() < 1000;
+    const bool bypass = engineSimPlaying && !s_keepLowCut.load();
+    if (bypass == s_lowCutBypassed && !s_lowCutDirty) return;
+
+    int changed = 0;
+    for (void *bus : liveEventBuses()) {
+        int count = 0;
+        s_getNumDsps(bus, &count);
+        for (int i = 0; i < count; ++i) {
+            void *dsp = nullptr;
+            if (s_getDsp(bus, i, &dsp) != FMOD_OK || !dsp) continue;
+            if (dspName(dsp) == "FMOD Highpass Simple" && s_dspSetBypass(dsp, bypass) == FMOD_OK) ++changed;
+        }
+    }
+
+    if (bypass != s_lowCutBypassed || changed > 0) {
+        logf("game low cut %s on %d filter(s)\n", bypass ? "bypassed" : "restored", changed);
+    }
+    s_lowCutBypassed = bypass;
+    s_lowCutDirty = false;
+}
+
+// Logs the filters and EQs of the event buses every 5 s, a limited number of times.
+// Game thread only (FMOD must not be queried from inside a DSP callback). Needs s_mutex.
+void maybeDumpEventBuses() {
+    const unsigned long long now = nowMs();
+    if (s_parameterDumps >= 24 || now - s_lastParameterDump < 5000) return;
+
+    const std::vector<void *> buses = liveEventBuses();
+    if (buses.empty()) return;
+    s_lastParameterDump = now;
+    ++s_parameterDumps;
+
+    for (void *bus : buses) {
+        int count = 0;
+        s_getNumDsps(bus, &count);
+        logf("event bus %p filters:\n", bus);
+        for (int i = 0; i < count; ++i) {
+            void *dsp = nullptr;
+            if (s_getDsp(bus, i, &dsp) != FMOD_OK || !dsp) continue;
+
+            const std::string name = dspName(dsp);
+            if (name.find("pass") == std::string::npos && name.find("Equalizer") == std::string::npos) continue;
+
+            bool bypass = false;
+            if (s_dspGetBypass) s_dspGetBypass(dsp, &bypass);
+            logf("    [%d] %s%s\n", i, name.c_str(), bypass ? " (bypassed)" : "");
+            logParameters(dsp);
+        }
+    }
+}
 
 // Logs every DSP of the group and its parents, in index order (index 0 is the head, the last
 // to process before the group's output). Shows what runs after our DSP.
@@ -331,7 +482,11 @@ void bridgeGroup(void *group) {
     if (it != s_bridgedGroups.end() && it->second == s_generation.load()) return;
 
     const unsigned long long now = nowMs();
-    if (now - s_lastBridgeTick > 500) s_generation++;
+    if (now - s_lastBridgeTick > 500) {
+        // Markers were re-initialised: the previous channels belong to old sound events
+        s_generation++;
+        s_markerPlayChannels.clear();
+    }
     s_lastBridgeTick = now;
 
     void *dsp = nullptr;
@@ -341,7 +496,7 @@ void bridgeGroup(void *group) {
     if (added == FMOD_OK) s_bridgedGroups[group] = s_generation.load();
 
     static int chainsLogged = 0;
-    if (added == FMOD_OK && chainsLogged++ < 8) logChain(group);
+    if (added == FMOD_OK && chainsLogged++ < 4) logChain(group);
 }
 
 int hookCreateSound(void *system, const char *name, unsigned int mode, void *exinfo, void **sound) {
@@ -367,12 +522,21 @@ int hookPlaySound(void *system, void *sound, void *group, bool paused, void **ch
     if (result != FMOD_OK) return result;
 
     std::lock_guard<std::mutex> lock(s_mutex);
-    if (!s_markerSounds.count(sound)) return result;
+    if (s_markerSounds.count(sound)) {
+        static std::atomic<int> logged{0};
+        if (logged++ < 20) logf("marker play: group %p channel %p\n", group, channel ? *channel : nullptr);
+        if (group) bridgeGroup(group);
+        else if (channel) s_markerChannels.insert(*channel);
 
-    static std::atomic<int> logged{0};
-    if (logged++ < 20) logf("marker play: group %p channel %p\n", group, channel ? *channel : nullptr);
-    if (group) bridgeGroup(group);
-    else if (channel) s_markerChannels.insert(*channel);
+        if (channel && *channel) {
+            s_markerPlayChannels.push_back(*channel);
+            s_lowCutDirty = true;
+        }
+    }
+
+    // playSound runs constantly in game, which makes it a good place for these game-thread jobs
+    applyLowCut();
+    maybeDumpEventBuses();
     return result;
 }
 
@@ -384,6 +548,8 @@ int hookSetChannelGroup(void *channel, void *group) {
     if (s_markerChannels.erase(channel)) {
         logf("marker channel %p -> group %p\n", channel, group);
         bridgeGroup(group);
+        s_markerPlayChannels.push_back(channel);
+        s_lowCutDirty = true;
     }
     return result;
 }
@@ -402,6 +568,13 @@ void installHooks() {
     s_dspGetInfo = reinterpret_cast<DspGetInfoFn>(dlsym(RTLD_DEFAULT, fmod_symbols::DspGetInfo));
     s_dspGetChannelFormat = reinterpret_cast<DspGetChannelFormatFn>(dlsym(RTLD_DEFAULT, fmod_symbols::DspGetChannelFormat));
     s_dspGetBypass = reinterpret_cast<DspGetBypassFn>(dlsym(RTLD_DEFAULT, fmod_symbols::DspGetBypass));
+    s_dspGetNumParameters = reinterpret_cast<DspGetNumParametersFn>(dlsym(RTLD_DEFAULT, fmod_symbols::DspGetNumParameters));
+    s_dspGetParameterInfo = reinterpret_cast<DspGetParameterInfoFn>(dlsym(RTLD_DEFAULT, fmod_symbols::DspGetParameterInfo));
+    s_dspGetParameterFloat = reinterpret_cast<DspGetParameterFloatFn>(dlsym(RTLD_DEFAULT, fmod_symbols::DspGetParameterFloat));
+    s_dspGetParameterInt = reinterpret_cast<DspGetParameterIntFn>(dlsym(RTLD_DEFAULT, fmod_symbols::DspGetParameterInt));
+    s_dspGetParameterBool = reinterpret_cast<DspGetParameterBoolFn>(dlsym(RTLD_DEFAULT, fmod_symbols::DspGetParameterBool));
+    s_dspSetBypass = reinterpret_cast<DspSetBypassFn>(dlsym(RTLD_DEFAULT, fmod_symbols::DspSetBypass));
+    s_channelGetChannelGroup = reinterpret_cast<ChannelGetChannelGroupFn>(dlsym(RTLD_DEFAULT, fmod_symbols::ChannelGetChannelGroup));
 
     logf("resolve: createSound %p playSound %p setChannelGroup %p createDSP %p addDSP %p\n",
         createSound, playSound, setChannelGroup, reinterpret_cast<void *>(s_createDsp), reinterpret_cast<void *>(s_addDsp));

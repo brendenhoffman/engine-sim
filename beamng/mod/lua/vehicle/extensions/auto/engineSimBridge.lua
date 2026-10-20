@@ -50,6 +50,9 @@ end
 -- toggle, read soundConfig from v.data if the restored sound level matters
 local function useMarkerBlends(on)
   local cfg = engine.soundConfiguration
+  log("I", "engineSimBridge", string.format("%s: sound config %s, engine sound %s, exhaust sound %s",
+    on and "linking" or "unlinking", cfg and "found" or "MISSING",
+    tostring(engine.engineSoundID), tostring(engine.engineSoundIDExhaust)))
   if not cfg then return end
   if engine.engineSoundID and cfg.engine then
     originalBlends.engine = originalBlends.engine or cfg.engine.blendFile
@@ -88,7 +91,8 @@ end
 
 local tunedFields = {"torqueCurve", "idleRPM", "idleAV", "maxRPM", "maxAV", "revLimiterRPM", "revLimiterAV",
   "revLimiterMaxAV", "invRevLimiterRange", "inertia", "initialInertia", "invEngInertia", "halfInvEngInertia",
-  "friction", "initialFriction", "dynamicFriction", "engineBrakeTorque", "torqueData", "maxPower", "maxTorque", "maxPowerThrottleMap"}
+  "friction", "initialFriction", "dynamicFriction", "engineBrakeTorque", "torqueData", "maxPower", "maxTorque", "maxPowerThrottleMap",
+  "maxTorqueRating", "maxPhysicalAV"}
 
 local function refreshTorqueData()
   engine.torqueData = engine:getTorqueData()
@@ -114,7 +118,7 @@ local function applyProfile(p, count)
   end
   local idleRPM, limitRPM, rpmToAV = p[1], p[2], 0.104719755
 
-  local curve, j = {}, 0
+  local curve, j, peakTorque = {}, 0, 0
   for rpm = 0, math.floor(limitRPM + 1000) do
     while j < n - 2 and p[7 + j + 1] < rpm do j = j + 1 end
     local r0, r1 = p[7 + j], p[7 + j + 1]
@@ -123,8 +127,21 @@ local function applyProfile(p, count)
     if rpm < idleRPM * 0.3 then torque = 0 end
     if rpm > limitRPM then torque = torque * math.max(1 - (rpm - limitRPM) / 1000, 0) end
     curve[rpm] = torque
+    peakTorque = math.max(peakTorque, torque)
   end
   engine.torqueCurve = curve
+
+  -- BeamNG damages (and eventually blows) an engine making more than its rated torque; the
+  -- profiled engine can make far more than the stock one, so rate it for what it now makes
+  if (stockEngine.maxTorqueRating or -1) > 0 then
+    engine.maxTorqueRating = math.max(stockEngine.maxTorqueRating, peakTorque * 1.25)
+  end
+
+  -- Past maxPhysicalAV BeamNG bends valves and seizes the engine; it's the stock redline plus a
+  -- margin, so revving to the profiled engine's limiter would count as over-revving
+  if stockEngine.maxPhysicalAV then
+    engine.maxPhysicalAV = math.max(stockEngine.maxPhysicalAV, limitRPM * 1.1 * rpmToAV)
+  end
 
   engine.friction, engine.initialFriction = p[4], p[4]
   engine.dynamicFriction = p[5]

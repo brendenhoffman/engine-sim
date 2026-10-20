@@ -10,6 +10,7 @@ using nlohmann::json;
 TEST(HostSettingsTests, Defaults) {
     const HostSettings settings;
     EXPECT_TRUE(settings.bridge.connect);
+    EXPECT_FALSE(settings.bridge.driveCar);
     EXPECT_FLOAT_EQ(settings.bridge.volume, 0.20f);
     EXPECT_EQ(settings.headroomDb, 6);
     EXPECT_FLOAT_EQ(settings.bridge.beamIdleRpm, 1100.0f);
@@ -17,6 +18,7 @@ TEST(HostSettingsTests, Defaults) {
     EXPECT_TRUE(settings.bridge.neutralEq);
     EXPECT_TRUE(settings.bridge.intakeSound);
     EXPECT_TRUE(settings.bridge.exhaustSound);
+    EXPECT_FALSE(settings.bridge.keepGameLowCut);
     EXPECT_EQ(settings.simulationFrequency, 0);
     EXPECT_TRUE(settings.script.empty());
 }

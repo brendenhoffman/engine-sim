@@ -9,6 +9,7 @@
 #include <imgui_impl_sdlgpu3.h>
 #include <SDL3/SDL.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -18,6 +19,8 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <type_traits>
+#include <vector>
 
 using nlohmann::json;
 using clock_type = std::chrono::steady_clock;
@@ -28,6 +31,23 @@ const ImVec4 Green(0.29f, 0.87f, 0.50f, 1.0f);
 const ImVec4 Orange(1.00f, 0.67f, 0.24f, 1.0f);
 const ImVec4 Red(1.00f, 0.39f, 0.35f, 1.0f);
 const ImVec4 Muted(0.60f, 0.60f, 0.65f, 1.0f);
+
+// Reads a field of the expected type, or the fallback: the game sends whatever its data holds
+// (names can be translation objects, numbers can be missing), and the panel must not crash on it
+template <typename T>
+T field(const json &object, const char *key, T fallback) {
+    if (!object.is_object()) return fallback;
+    const auto it = object.find(key);
+    if (it == object.end()) return fallback;
+    if constexpr (std::is_same_v<T, json>) return *it;
+    else if constexpr (std::is_same_v<T, std::string>) return it->is_string() ? it->template get<std::string>() : fallback;
+    else if constexpr (std::is_same_v<T, bool>) return it->is_boolean() ? it->template get<bool>() : fallback;
+    else return it->is_number() ? it->template get<T>() : fallback;
+}
+
+std::string field(const json &object, const char *key, const char *fallback) {
+    return field<std::string>(object, key, std::string(fallback));
+}
 
 // ------------------------------------------------------------------ live settings editing
 
@@ -118,6 +138,33 @@ private:
     std::map<std::string, Pending> m_pending;
 };
 
+// A live engine-sound slider. Shows engine-sim's current value except while (or just after)
+// it's being dragged; sends at most 10 updates a second, plus the final value on release.
+void synthSlider(ControlClient &client, const json &synth, const char *label, const char *key, float scale, const char *format, ImGuiSliderFlags flags = 0) {
+    struct Pending { float value; clock_type::time_point changed, sent; };
+    static std::map<std::string, Pending> pending;
+
+    float value = static_cast<float>(field(synth, key, 0.0)) * scale;
+    const auto it = pending.find(key);
+    if (it != pending.end()) {
+        if (clock_type::now() - it->second.changed < std::chrono::milliseconds(1500)) value = it->second.value;
+        else pending.erase(it);
+    }
+
+    const float min = (flags & ImGuiSliderFlags_Logarithmic) ? 0.0001f * scale : 0.0f;
+    const bool changed = ImGui::SliderFloat(label, &value, min, scale, format, flags);
+    const bool released = ImGui::IsItemDeactivatedAfterEdit();
+    if (!changed && !released) return;
+
+    Pending &p = pending[key];
+    p.value = value;
+    p.changed = clock_type::now();
+    if (released || clock_type::now() - p.sent > std::chrono::milliseconds(100)) {
+        client.send({ { "cmd", "synth" }, { key, value / scale } });
+        p.sent = clock_type::now();
+    }
+}
+
 void help(const char *text) {
     ImGui::SameLine();
     ImGui::TextDisabled("(?)");
@@ -193,18 +240,18 @@ void drawPanel(SDL_Window *window, ControlClient &client, SettingsEditor &editor
     ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * 0.55f);
 
     const json &status = snap.status;
-    editor.update(status.value("settings", json::object()));
+    editor.update(field(status, "settings", json::object()));
 
-    const json engine = status.value("engine", json());
-    const json bridge = status.value("bridge", json::object());
-    const json performance = status.value("performance", json::object());
-    const bool linked = bridge.value("linked", false);
+    const json engine = field(status, "engine", json());
+    const json bridge = field(status, "bridge", json::object());
+    const json performance = field(status, "performance", json::object());
+    const bool linked = field(bridge, "linked", false);
 
     // --- Status
     ImGui::TextColored(Green, "engine-sim connected");
     ImGui::SameLine(0, ImGui::GetFontSize() * 1.5f);
-    if (!bridge.value("listening", false)) ImGui::TextColored(Red, "BeamNG bridge off");
-    else if (bridge.value("tuning", false)) ImGui::TextColored(Orange, "Profiling engine for BeamNG");
+    if (!field(bridge, "listening", false)) ImGui::TextColored(Red, "BeamNG bridge off");
+    else if (field(bridge, "tuning", false)) ImGui::TextColored(Orange, "Profiling engine for BeamNG");
     else if (linked) ImGui::TextColored(Green, "Linked to BeamNG");
     else ImGui::TextColored(Muted, "Waiting for BeamNG");
 
@@ -217,21 +264,21 @@ void drawPanel(SDL_Window *window, ControlClient &client, SettingsEditor &editor
     // --- Engine
     if (ImGui::CollapsingHeader("Engine", ImGuiTreeNodeFlags_DefaultOpen)) {
         if (engine.is_object()) {
-            ImGui::Text("%s", engine.value("name", "").c_str());
+            ImGui::Text("%s", field(engine, "name", "").c_str());
 
-            const double rpm = engine.value("rpm", 0.0);
-            const double redline = std::max(engine.value("redline_rpm", 1.0), 1.0);
+            const double rpm = field(engine, "rpm", 0.0);
+            const double redline = std::max(field(engine, "redline_rpm", 1.0), 1.0);
             char rpmText[32];
             std::snprintf(rpmText, sizeof(rpmText), "%.0f rpm", rpm);
             ImGui::ProgressBar(static_cast<float>(std::min(rpm / redline, 1.0)), ImVec2(-FLT_MIN, 0), rpmText);
 
-            const double load = performance.value("load", 0.0);
+            const double load = field(performance, "load", 0.0);
             ImGui::TextColored(load > 0.9 ? Red : Muted, "%d Hz simulation, %.0f%% of a CPU core",
-                engine.value("simulation_frequency", 0), load * 100);
+                field(engine, "simulation_frequency", 0), load * 100);
             if (load > 0.9) help("The simulation can barely keep up, which makes the sound crackle. Lower the simulation rate below.");
 
             // Folder and file name; the full path on hover
-            const std::filesystem::path script = engine.value("script", "");
+            const std::filesystem::path script = field(engine, "script", "");
             const std::string shortName = (script.parent_path().filename() / script.filename()).string();
             ImGui::TextColored(Muted, "%s", shortName.c_str());
             ImGui::SetItemTooltip("%s", script.c_str());
@@ -241,7 +288,7 @@ void drawPanel(SDL_Window *window, ControlClient &client, SettingsEditor &editor
         }
 
         ImGui::BeginDisabled(snap.busy);
-        if (ImGui::Button("Load engine...")) openEnginePicker(window, engine.is_object() ? engine.value("script", "") : "");
+        if (ImGui::Button("Load engine...")) openEnginePicker(window, engine.is_object() ? field(engine, "script", "") : "");
         ImGui::SameLine();
         if (ImGui::Button("Default engine")) client.send({ { "cmd", "load" }, { "script", "" } });
         ImGui::EndDisabled();
@@ -264,27 +311,92 @@ void drawPanel(SDL_Window *window, ControlClient &client, SettingsEditor &editor
 
         editor.sliderFloat("Volume", "/bridge/volume", 0, 200, "%.0f%%", 100.0f);
 
-        int idleRpm = static_cast<int>(std::lround(editor.current("/bridge/beam_idle_rpm", 1100.0)));
-        if (ImGui::SliderInt("Stock torque below", &idleRpm, 0, 3000, idleRpm == 0 ? "off" : "%d rpm")) {
-            editor.commit("/bridge/beam_idle_rpm", idleRpm, false);
-        }
-        if (ImGui::IsItemDeactivatedAfterEdit()) editor.commit("/bridge/beam_idle_rpm", idleRpm, true);
-        help("Below this rpm, or with the throttle closed, the car uses its own torque. Keeps idle steady.");
-
         editor.checkbox("Flat EQ", "/bridge/neutral_eq");
         help("The car's sound EQ is tuned for its own recordings. Flattening it lets engine-sim through unchanged.");
+        ImGui::SameLine();
+        editor.checkbox("Game's low cut", "/bridge/game_low_cut");
+        help("BeamNG filters out everything below ~90-190 Hz on engine sound, which is where engine-sim's body is. Off lets the low end through (needs the updated plugin).");
 
         editor.checkbox("Intake", "/bridge/intake_sound");
         ImGui::SameLine();
         editor.checkbox("Exhaust", "/bridge/exhaust_sound");
         help("Which of the car's sound sources play engine-sim.");
 
+        ImGui::SeparatorText("Performance");
+        editor.checkbox("engine-sim drives the car", "/bridge/drive_car");
+        help("Off: engine-sim only makes the sound and the car keeps its own engine. On: the car gets engine-sim's torque, so it accelerates like the loaded engine (fun, but an F1 engine in a truck bogs and stalls).");
+        ImGui::BeginDisabled(!editor.current("/bridge/drive_car", false));
+        int idleRpm = static_cast<int>(std::lround(editor.current("/bridge/beam_idle_rpm", 1100.0)));
+        if (ImGui::SliderInt("Stock torque below", &idleRpm, 0, 3000, idleRpm == 0 ? "off" : "%d rpm")) {
+            editor.commit("/bridge/beam_idle_rpm", idleRpm, false);
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit()) editor.commit("/bridge/beam_idle_rpm", idleRpm, true);
+        help("Below this rpm, or with the throttle closed, the car uses its own torque. Keeps idle steady.");
+        ImGui::EndDisabled();
+
         editor.checkbox("Tune car to this engine", "/bridge/tune_beam_engine");
-        help("Measures the engine (a short rev sweep while the car is quiet) and reshapes the car's torque curve, idle, redline and inertia to match.");
+        help("Measures the engine (a short rev sweep while the car is quiet) and reshapes the car's own engine (torque curve, idle, redline, inertia) to match. This changes how the car drives too, even with the option above off.");
         ImGui::SameLine();
         ImGui::BeginDisabled(!editor.current("/bridge/tune_beam_engine", false));
         if (ImGui::Button("Retune")) client.send({ { "cmd", "retune" } });
         ImGui::EndDisabled();
+    }
+
+    // --- What BeamNG says about the player's car
+    const json vehicle = field(status, "beamng_vehicle", json());
+    if (vehicle.is_object() && ImGui::CollapsingHeader("BeamNG car", ImGuiTreeNodeFlags_DefaultOpen)) {
+        const json car = field(vehicle, "vehicle", json::object());
+        ImGui::Text("%s", field(car, "model", field(car, "directory", std::string("Unknown car"))).c_str());
+        const std::string configuration = field(car, "configuration", "");
+        if (!configuration.empty()) {
+            ImGui::SameLine();
+            ImGui::TextColored(Muted, "%s", configuration.c_str());
+        }
+
+        const json carEngine = field(vehicle, "engine", json());
+        if (!carEngine.is_object()) {
+            ImGui::TextColored(Muted, "No combustion engine (electric?)");
+        }
+        else {
+            ImGui::Text("%s", field(carEngine, "name", field(carEngine, "part", std::string("Unknown engine"))).c_str());
+            ImGui::SetItemTooltip("Part: %s", field(carEngine, "part", std::string("?")).c_str());
+
+            // Peak torque from the jbeam table
+            double peakTorque = 0, peakRpm = 0, maxRpmInTable = 0;
+            std::vector<float> curve;
+            const json torque = field(carEngine, "torque", json::array());
+            for (const json &row : torque) {
+                if (!row.is_array() || row.size() < 2 || !row[0].is_number() || !row[1].is_number()) continue;
+                const double rpm = row[0].get<double>(), nm = row[1].get<double>();
+                if (nm > peakTorque) { peakTorque = nm; peakRpm = rpm; }
+                maxRpmInTable = std::max(maxRpmInTable, rpm);
+                curve.push_back(static_cast<float>(nm));
+            }
+
+            const int cylinders = field(carEngine, "cylinders", 0);
+            const std::string fuel = field(carEngine, "fuel", std::string("?"));
+            const double idle = field(carEngine, "idle_rpm", 0.0);
+            const double limit = field(carEngine, "rev_limiter_rpm", field(carEngine, "max_rpm", 0.0));
+            ImGui::TextColored(Muted, "%s%d cylinders, %s, idle %.0f, limit %.0f rpm",
+                cylinders > 0 ? "" : "? ", cylinders, fuel.c_str(), idle, limit);
+            if (peakTorque > 0) ImGui::TextColored(Muted, "%.0f Nm at %.0f rpm (before boost)", peakTorque, peakRpm);
+
+            if (vehicle.contains("turbo")) {
+                const json turbo = vehicle["turbo"];
+                ImGui::TextColored(Muted, "Turbo: %s, %.0f psi", field(turbo, "name", std::string("fitted")).c_str(), field(turbo, "wastegate_psi", 0.0));
+            }
+            if (vehicle.contains("supercharger")) {
+                const json sc = vehicle["supercharger"];
+                ImGui::TextColored(Muted, "Supercharger: %s (%s)", field(sc, "name", std::string("fitted")).c_str(), field(sc, "type", std::string("?")).c_str());
+            }
+
+            if (curve.size() >= 2) {
+                char overlay[64];
+                std::snprintf(overlay, sizeof(overlay), "torque, 0-%.0f rpm", maxRpmInTable);
+                ImGui::PlotLines("##torque", curve.data(), static_cast<int>(curve.size()), 0, overlay, 0.0f, FLT_MAX,
+                    ImVec2(-FLT_MIN, ImGui::GetFontSize() * 4));
+            }
+        }
     }
 
     // --- Sound
@@ -293,12 +405,30 @@ void drawPanel(SDL_Window *window, ControlClient &client, SettingsEditor &editor
         help("Lowers engine-sim's level so its peaks don't clip (harsh, buzzy distortion). 0 dB is upstream engine-sim, which clips; 6 dB is clean.");
     }
 
+    // --- The synthesizer's mix, as on the engine-sim window's Z/X/C/V/B + scroll
+    const json synth = field(status, "synth", json());
+    if (synth.is_object() && ImGui::CollapsingHeader("Engine sound")) {
+        synthSlider(client, synth, "Volume##synth", "volume", 100, "%.0f%%");
+        help("engine-sim's own output level (Z). The BeamNG volume above is applied on top.");
+        synthSlider(client, synth, "Convolution", "convolution", 100, "%.0f%%");
+        help("How much of the exhaust's impulse response (its echo and resonance) is mixed in (X).");
+        synthSlider(client, synth, "High freq. gain", "high_freq_gain", 1, "%.4f", ImGuiSliderFlags_Logarithmic);
+        help("Adds the sharp, high-frequency part of the pressure pulses (C).");
+        synthSlider(client, synth, "Low freq. noise", "low_freq_noise", 100, "%.0f%%");
+        help("Rumbly air noise mixed into the exhaust (V).");
+        synthSlider(client, synth, "High freq. noise", "high_freq_noise", 100, "%.0f%%");
+        help("Random jitter on the input, a rough raspy texture (B).");
+
+        if (ImGui::Button("Reset to this engine's sound")) client.send({ { "cmd", "synth" }, { "reset", true } });
+        ImGui::TextColored(Muted, "Per engine; loading an engine starts from its own values.");
+    }
+
     // --- Simulation
     if (ImGui::CollapsingHeader("Simulation")) {
         double frequency = editor.current("/simulation_frequency", 0.0);
         bool ownRate = frequency == 0;
         if (ImGui::Checkbox("Use the engine's own rate", &ownRate)) {
-            editor.commit("/simulation_frequency", ownRate ? 0 : engine.value("simulation_frequency", 10000), true);
+            editor.commit("/simulation_frequency", ownRate ? 0 : field(engine, "simulation_frequency", 10000), true);
         }
         if (!ownRate) editor.sliderInt("Rate", "/simulation_frequency", 2000, 40000, "%d Hz");
         help("Higher sounds cleaner but costs more CPU. If the load above gets near 100%, go lower.");
@@ -310,7 +440,7 @@ void drawPanel(SDL_Window *window, ControlClient &client, SettingsEditor &editor
             ImGui::TextColored(Muted, "BeamNG is driving the engine.");
         }
         else if (engine.is_object()) {
-            bool ignition = engine.value("ignition", false);
+            bool ignition = field(engine, "ignition", false);
             if (ImGui::Checkbox("Ignition", &ignition)) client.send({ { "cmd", "control" }, { "ignition", ignition } });
 
             ImGui::SameLine();
@@ -319,7 +449,7 @@ void drawPanel(SDL_Window *window, ControlClient &client, SettingsEditor &editor
             if (ImGui::IsItemDeactivated()) client.send({ { "cmd", "control" }, { "starter", false } });
 
             static float throttle = 0;
-            if (!ImGui::IsAnyItemActive()) throttle = static_cast<float>(engine.value("throttle", 0.0)) * 100;
+            if (!ImGui::IsAnyItemActive()) throttle = static_cast<float>(field(engine, "throttle", 0.0)) * 100;
             if (ImGui::SliderFloat("Throttle", &throttle, 0, 100, "%.0f%%")) {
                 client.send({ { "cmd", "control" }, { "throttle", throttle / 100.0 } });
             }
@@ -432,7 +562,13 @@ int main(int argc, char **argv) {
         ImGui::SetNextWindowSize(viewport->WorkSize);
         ImGui::Begin("engine-sim control", nullptr,
             ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
-        drawPanel(window, client, editor, launcher, socketPath);
+        try {
+            drawPanel(window, client, editor, launcher, socketPath);
+        }
+        catch (const std::exception &e) {
+            // Unexpected data shouldn't take the panel down; show it and carry on
+            ImGui::TextColored(Red, "Couldn't show this: %s", e.what());
+        }
         ImGui::End();
 
         ImGui::Render();

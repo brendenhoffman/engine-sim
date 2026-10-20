@@ -191,6 +191,7 @@ json ControlServer::handle(const json &request) {
     if (cmd == "set") return setSettings(request);
     if (cmd == "load") return load(request);
     if (cmd == "control") return control(request);
+    if (cmd == "synth") return synth(request);
     if (cmd == "shutdown") {
         if (!m_shutdownHandler) return failure("shutdown isn't supported here");
         m_shutdownHandler();
@@ -229,12 +230,34 @@ json ControlServer::status() {
             reply["engine"] = nullptr;
         }
 
+        if (simulator != nullptr) {
+            const Synthesizer::AudioParameters audio = simulator->synthesizer().getAudioParameters();
+            reply["synth"] = {
+                { "volume", audio.volume },
+                { "convolution", audio.convolution },
+                { "high_freq_gain", audio.dF_F_mix },
+                { "low_freq_noise", audio.airNoise },
+                { "high_freq_noise", audio.inputSampleNoise },
+            };
+        }
+
         BeamBridge *bridge = m_host->bridge();
         reply["bridge"] = {
             { "listening", bridge != nullptr },
             { "linked", bridge != nullptr && bridge->active() },
             { "tuning", bridge != nullptr && bridge->tuning() },
         };
+    }
+
+    // What BeamNG says about the player's car (doesn't need the host lock)
+    reply["beamng_vehicle"] = nullptr;
+    if (BridgeTransport *transport = m_host->bridgeTransport()) {
+        json vehicle;
+        double age = 0;
+        if (transport->vehicleInfo(&vehicle, &age) && age < 10) {
+            vehicle["age"] = age;
+            reply["beamng_vehicle"] = std::move(vehicle);
+        }
     }
 
     reply["performance"] = {
@@ -334,6 +357,46 @@ json ControlServer::control(const json &request) {
     if (request.contains("ignition")) engine->getIgnitionModule()->m_enabled = request["ignition"].get<bool>();
     if (request.contains("starter")) simulator->m_starterMotor.m_enabled = request["starter"].get<bool>();
     if (request.contains("throttle")) engine->setSpeedControl(request["throttle"].get<double>());
+
+    return { { "ok", true } };
+}
+
+json ControlServer::synth(const json &request) {
+    // The keys the engine-sim window's Z/X/C/V/B + scroll controls change, all 0 to 1
+    static const struct { const char *key; float Synthesizer::AudioParameters::*field; } fields[] = {
+        { "volume", &Synthesizer::AudioParameters::volume },
+        { "convolution", &Synthesizer::AudioParameters::convolution },
+        { "high_freq_gain", &Synthesizer::AudioParameters::dF_F_mix },
+        { "low_freq_noise", &Synthesizer::AudioParameters::airNoise },
+        { "high_freq_noise", &Synthesizer::AudioParameters::inputSampleNoise },
+    };
+
+    for (const auto &f : fields) {
+        if (!request.contains(f.key)) continue;
+        if (!request[f.key].is_number()) return failure(std::string(f.key) + " must be a number");
+        const double value = request[f.key].get<double>();
+        if (value < 0 || value > 1) return failure(std::string(f.key) + " must be between 0 and 1");
+    }
+
+    auto lock = m_host->lock();
+    Engine *engine = m_host->engine();
+    Simulator *simulator = m_host->simulator();
+    if (engine == nullptr || simulator == nullptr) return failure("no engine loaded");
+
+    Synthesizer::AudioParameters audio = simulator->synthesizer().getAudioParameters();
+    if (request.contains("reset") && request["reset"].is_boolean() && request["reset"].get<bool>()) {
+        // What loading the engine sets up
+        const Synthesizer::AudioParameters defaults;
+        audio.volume = defaults.volume;
+        audio.convolution = defaults.convolution;
+        audio.inputSampleNoise = static_cast<float>(engine->getInitialJitter());
+        audio.airNoise = static_cast<float>(engine->getInitialNoise());
+        audio.dF_F_mix = static_cast<float>(engine->getInitialHighFrequencyGain());
+    }
+    for (const auto &f : fields) {
+        if (request.contains(f.key)) audio.*(f.field) = static_cast<float>(request[f.key].get<double>());
+    }
+    simulator->synthesizer().setAudioParameters(audio);
 
     return { { "ok", true } };
 }
