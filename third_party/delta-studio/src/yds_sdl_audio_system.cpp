@@ -2,65 +2,30 @@
 
 #include "../include/yds_sdl_audio_device.h"
 
-#include <SDL2/SDL.h>
+#include <SDL3/SDL.h>
 
 ysSdlAudioSystem::ysSdlAudioSystem() : ysAudioSystem(API::Sdl) {
     // Make sure that the audio system is up
-    SDL_Init(SDL_INIT_AUDIO);
+    if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
+        SDL_LogError(SDL_LOG_CATEGORY_AUDIO, "SDL audio init failed: %s", SDL_GetError());
+    }
 }
 
 ysSdlAudioSystem::~ysSdlAudioSystem() {
-    /* void */
+    // Devices own SDL audio streams, so they must go before the subsystem shuts down
+    m_devices.Clear();
+    SDL_QuitSubSystem(SDL_INIT_AUDIO);
 }
 
 void ysSdlAudioSystem::EnumerateDevices() {
     ysAudioSystem::EnumerateDevices();
 
-    // The output format we want
-    SDL_AudioSpec desired{};
-    desired.freq = 44100;
-    desired.format = AUDIO_S16;
-    desired.channels = 1; // TODO: multi-channel support
-    desired.samples = 512;
-    desired.callback = [](void *ud, Uint8 *stream, int bytes) {
-        static_cast<ysSdlAudioDevice *>(ud)->FillBuffer((int16_t *)stream, bytes / sizeof(int16_t));
-    };
-
-    auto CreateDevice = [&](const char *name) {
-        // Create a new device to track it
-        auto *newDevice = m_devices.NewGeneric<ysSdlAudioDevice>();
-
-        // Set the callbacks to match the new device
-        desired.userdata = newDevice;
-
-        // Try and open the device
-        SDL_AudioSpec obtained;
-        SDL_AudioDeviceID deviceId = SDL_OpenAudioDevice(name, 0, &desired, &obtained, 0);
-        if (deviceId == 0) {
-            // TODO: destroy newDevice somehow
-            return;
-        }
-
-        // Device is ready
-        newDevice->m_outputFormat = obtained;
-        newDevice->m_deviceId = deviceId;
-    };
-
-    // SDL_GetNumAudioDevices() detects devices under the hood
-    const int numDevices = SDL_GetNumAudioDevices(0);
-
-    // Add our primary device
-    CreateDevice(nullptr);
-
-    // We could iterate over all available devices, however we only need
-    // the primary one at the moment
-#if 0
-    for (int i = 0; i < numDevices; i++) {
-        // Try and open the device
-        const char *name = SDL_GetAudioDeviceName(i, 0);
-        CreateDevice(name);
+    // Only the default output is used. SDL follows it if the user switches outputs, and the
+    // stream converts our format to whatever the hardware runs at.
+    auto *newDevice = m_devices.NewGeneric<ysSdlAudioDevice>();
+    if (!newDevice->Open()) {
+        SDL_LogError(SDL_LOG_CATEGORY_AUDIO, "Could not open audio output: %s", SDL_GetError());
     }
-#endif
 }
 
 void ysSdlAudioSystem::ConnectDevice(ysAudioDevice *device, ysWindow *windowAssociation) {

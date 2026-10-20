@@ -1,5 +1,5 @@
 # delta-studio (vendored and trimmed to OpenGL + SDL, see ../VENDORED.md)
-sdl_dep = dependency('sdl2')
+sdl_dep = dependency('sdl3', version: '>=3.2')
 gl_dep = dependency('gl')
 
 delta_inc = include_directories(

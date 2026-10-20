@@ -1,6 +1,6 @@
 #include "../include/yds_sdl_audio_wave_file.h"
 
-#include <SDL.h>
+#include <SDL3/SDL.h>
 
 #include <cstring>
 
@@ -19,16 +19,29 @@ ysAudioFile::Error ysSdlAudioWaveFile::OpenFile(const char *fname) {
     if (error != Error::None) return error;
 
     // Lazy approach: load everything since files are small
-    SDL_AudioSpec spec{};
-    if (SDL_LoadWAV(fname, &spec, &m_data, &m_dataLength) == nullptr) {
+    SDL_AudioSpec fileSpec{};
+    Uint8 *fileData = nullptr;
+    Uint32 fileLength = 0;
+    if (!SDL_LoadWAV(fname, &fileSpec, &fileData, &fileLength)) {
+        return Error::CouldNotOpenFile;
+    }
+
+    // Callers read raw samples, so always hand back 16-bit mono at 44.1 kHz whatever the file is
+    const SDL_AudioSpec targetSpec = { SDL_AUDIO_S16, 1, 44100 };
+    int convertedLength = 0;
+    const bool converted = SDL_ConvertAudioSamples(
+        &fileSpec, fileData, static_cast<int>(fileLength), &targetSpec, &m_data, &convertedLength);
+    SDL_free(fileData);
+    if (!converted) {
         return Error::CouldNotOpenFile;
     }
 
     // Everything worked, commit data
-    m_audioParameters.m_channelCount = spec.channels;
-    m_audioParameters.m_sampleRate = spec.freq;
-    m_audioParameters.m_bitsPerSample = SDL_AUDIO_BITSIZE(spec.format);
-    m_sampleCount = spec.samples;
+    m_dataLength = static_cast<uint32_t>(convertedLength);
+    m_audioParameters.m_channelCount = targetSpec.channels;
+    m_audioParameters.m_sampleRate = targetSpec.freq;
+    m_audioParameters.m_bitsPerSample = SDL_AUDIO_BITSIZE(targetSpec.format);
+    m_sampleCount = m_audioParameters.GetSamplesFromSize(m_dataLength);
     m_fileOpen = true;
 
     return Error::None;

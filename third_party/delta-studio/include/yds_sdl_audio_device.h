@@ -3,7 +3,10 @@
 
 #include "yds_audio_device.h"
 
-#include <SDL2/SDL_audio.h>
+#include <SDL3/SDL_audio.h>
+
+#include <cstddef>
+#include <cstdint>
 
 class ysSdlAudioSystem;
 
@@ -20,11 +23,14 @@ public:
     virtual void UpdateAudioSources() override;
 
 private:
+    bool Open();
     void FillBuffer(int16_t *audio, int frames);
+    static void SDLCALL StreamCallback(void *userdata, SDL_AudioStream *stream, int additionalAmount, int totalAmount);
 
 private:
-    SDL_AudioDeviceID m_deviceId;
+    SDL_AudioStream *m_stream;
     SDL_AudioSpec m_outputFormat;
+    size_t m_safeWriteFrames;
 };
 
 #endif /* YDS_SDL_AUDIO_DEVICE_H */

@@ -1,5 +1,7 @@
 #include "../include/yds_sdl_window.h"
 
+#include <SDL3/SDL.h>
+
 ysSdlWindow::ysSdlWindow() : ysWindow(Platform::Sdl) {
     /* void */
 }
@@ -14,9 +16,8 @@ ysError ysSdlWindow::InitializeWindow(ysWindow *parent, std::string title, Windo
     if (!CheckCompatibility(parent)) return YDS_ERROR_RETURN(ysError::IncompatiblePlatforms);
 
     YDS_NESTED_ERROR_CALL(ysWindow::InitializeWindow(parent, title, style, x, y, width, height, monitor, api));
-    auto *parentWindow = static_cast<ysSdlWindow *>(parent);
 
-    Uint32 flags = 0;
+    SDL_WindowFlags flags = 0;
 
     if (m_windowState == WindowState::Hidden)
         flags |= SDL_WINDOW_HIDDEN;
@@ -44,7 +45,17 @@ ysError ysSdlWindow::InitializeWindow(ysWindow *parent, std::string title, Windo
         break;
     }
 
-    m_window = SDL_CreateWindow(title.c_str(), x, y, width, height, flags);
+    // Position is left to the compositor (Wayland doesn't allow clients to place windows)
+    m_window = SDL_CreateWindow(title.c_str(), width, height, flags);
+    if (m_window == nullptr) {
+        SDL_LogError(SDL_LOG_CATEGORY_VIDEO, "SDL_CreateWindow failed: %s", SDL_GetError());
+        return YDS_ERROR_RETURN(ysError::CouldNotCreateWindow);
+    }
+
+    // The compositor may not honour the requested size, so start from what we actually got
+    int pixelWidth = width, pixelHeight = height;
+    SDL_GetWindowSizeInPixels(m_window, &pixelWidth, &pixelHeight);
+    SetWindowSize(pixelWidth, pixelHeight);
 
     return YDS_ERROR_RETURN(ysError::None);
 }
@@ -78,35 +89,15 @@ void ysSdlWindow::SetState(WindowState state) {
 }
 
 bool ysSdlWindow::SetWindowStyle(WindowStyle style) {
-    const bool wasFullscreen = GetWindowStyle() == WindowStyle::Fullscreen;
-
     if (!ysWindow::SetWindowStyle(style)) return false;
 
+    // SDL3 fullscreen defaults to borderless at desktop resolution and restores the previous
+    // windowed size on exit. The resulting SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED updates our size.
     if (style == WindowStyle::Windowed) {
-        const int width = wasFullscreen ? m_old_width : GetScreenWidth();
-        const int height = wasFullscreen ? m_old_height : GetScreenHeight();
-
-        const int x = GetPositionX();
-        const int y = GetPositionY();
-
-        SetLocation(x, y);
-        SetWindowSize(width, height);
-
-        SDL_SetWindowFullscreen(m_window, 0);
-        SDL_SetWindowSize(m_window, width, height);
+        SDL_SetWindowFullscreen(m_window, false);
         SDL_RaiseWindow(m_window);
     } else if (style == WindowStyle::Fullscreen) {
-        m_old_width = GetScreenWidth();
-        m_old_height = GetScreenHeight();
-
-        const int width = m_monitor->GetPhysicalWidth();
-        const int height = m_monitor->GetPhysicalHeight();
-
-        SetLocation(m_monitor->GetOriginX(), m_monitor->GetOriginY());
-        SetWindowSize(width, height);
-
-        SDL_SetWindowSize(m_window, width, height);
-        SDL_SetWindowFullscreen(m_window, SDL_WINDOW_FULLSCREEN);
+        SDL_SetWindowFullscreen(m_window, true);
     }
 
     return true;

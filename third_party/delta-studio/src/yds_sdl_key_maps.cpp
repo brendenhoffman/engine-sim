@@ -1,13 +1,13 @@
 #include "../include/yds_key_maps.h"
 
-#include <SDL2/SDL.h>
+#include <SDL3/SDL.h>
 
 ysKey::Code *ysKeyMaps::m_sdlKeyMap;
 
 const ysKey::Code *ysKeyMaps::GetSdlKeyMap() {
     if (m_sdlKeyMap == NULL) {
-        m_sdlKeyMap = new ysKey::Code[SDL_NUM_SCANCODES];
-        for (int i = 0; i < SDL_NUM_SCANCODES; ++i) m_sdlKeyMap[i] = ysKey::Code::Undefined;
+        m_sdlKeyMap = new ysKey::Code[SDL_SCANCODE_COUNT];
+        for (int i = 0; i < SDL_SCANCODE_COUNT; ++i) m_sdlKeyMap[i] = ysKey::Code::Undefined;
 
         m_sdlKeyMap[SDL_SCANCODE_A] = ysKey::Code::A;
         m_sdlKeyMap[SDL_SCANCODE_B] = ysKey::Code::B;
@@ -53,6 +53,18 @@ const ysKey::Code *ysKeyMaps::GetSdlKeyMap() {
 
         m_sdlKeyMap[SDL_SCANCODE_TAB] = ysKey::Code::Tab;
         m_sdlKeyMap[SDL_SCANCODE_ESCAPE] = ysKey::Code::Escape;
+        m_sdlKeyMap[SDL_SCANCODE_F1] = ysKey::Code::F1;
+        m_sdlKeyMap[SDL_SCANCODE_F2] = ysKey::Code::F2;
+        m_sdlKeyMap[SDL_SCANCODE_F3] = ysKey::Code::F3;
+        m_sdlKeyMap[SDL_SCANCODE_F4] = ysKey::Code::F4;
+        m_sdlKeyMap[SDL_SCANCODE_F5] = ysKey::Code::F5;
+        m_sdlKeyMap[SDL_SCANCODE_F6] = ysKey::Code::F6;
+        m_sdlKeyMap[SDL_SCANCODE_F7] = ysKey::Code::F7;
+        m_sdlKeyMap[SDL_SCANCODE_F8] = ysKey::Code::F8;
+        m_sdlKeyMap[SDL_SCANCODE_F9] = ysKey::Code::F9;
+        m_sdlKeyMap[SDL_SCANCODE_F10] = ysKey::Code::F10;
+        m_sdlKeyMap[SDL_SCANCODE_F11] = ysKey::Code::F11;
+        m_sdlKeyMap[SDL_SCANCODE_F12] = ysKey::Code::F12;
         m_sdlKeyMap[SDL_SCANCODE_SPACE] = ysKey::Code::Space;
         m_sdlKeyMap[SDL_SCANCODE_RETURN] = ysKey::Code::Return;
 

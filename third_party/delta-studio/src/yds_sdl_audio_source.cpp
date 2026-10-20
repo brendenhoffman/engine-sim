@@ -2,6 +2,7 @@
 
 #include "../include/yds_sdl_audio_buffer.h"
 
+#include <algorithm>
 #include <cmath>
 
 ysSdlAudioSource::ysSdlAudioSource() : ysAudioSource(API::Sdl) {
@@ -62,9 +63,10 @@ ysError ysSdlAudioSource::UnlockBufferSegments(void *segment1, SampleOffset segm
 ysError ysSdlAudioSource::SetMode(Mode mode) {
     YDS_ERROR_DECLARE("SetMode");
 
+    // Stop pauses playback in place (silence, read position frozen). Every other mode loops
+    // the buffer, which is all engine-sim uses.
+    std::lock_guard<std::mutex> guard(m_mutex);
     YDS_NESTED_ERROR_CALL( ysAudioSource::SetMode(mode) );
-
-    // TODO
 
     return YDS_ERROR_RETURN(ysError::None);
 }
@@ -89,7 +91,8 @@ ysError ysSdlAudioSource::SetDataBuffer(ysAudioBuffer *buffer) {
 ysError ysSdlAudioSource::SetVolume(float volume) {
     YDS_ERROR_DECLARE("SetVolume");
 
-    // TODO
+    std::lock_guard<std::mutex> guard(m_mutex);
+    YDS_NESTED_ERROR_CALL( ysAudioSource::SetVolume(volume) );
 
     return YDS_ERROR_RETURN(ysError::None);
 }
@@ -126,6 +129,13 @@ ysError ysSdlAudioSource::Destroy() {
 
 void ysSdlAudioSource::AddToBuffer(int16_t *audio, int frames) {
     std::lock_guard<std::mutex> guard(m_mutex);
+    if (m_bufferMode == Mode::Stop || m_dataBuffer == nullptr) return;
+
+    const float volume = m_volume;
+    auto mix = [volume](int16_t &out, int16_t in) {
+        const float mixed = out + in * volume;
+        out = static_cast<int16_t>(std::clamp(mixed, -32768.0f, 32767.0f));
+    };
 
     ysSdlAudioBuffer *sdlBuffer = static_cast<ysSdlAudioBuffer *>(m_dataBuffer);
     auto *buffer = (int16_t *)sdlBuffer->GetBuffer();
@@ -135,14 +145,14 @@ void ysSdlAudioSource::AddToBuffer(int16_t *audio, int frames) {
     const auto *segment1 = buffer + startOffset;
     const size_t length1 = std::min(size_t(frames), m_bufferSize - startOffset);
     for (size_t i = 0; i < length1; i++) {
-        audio[i] += segment1[i];
+        mix(audio[i], segment1[i]);
     }
 
     // Read the second segment
     const auto *segment2 = buffer;
     const size_t length2 = frames - length1;
     for (size_t i = 0; i < length2; i++) {
-        audio[i + length1] += segment2[i];
+        mix(audio[i + length1], segment2[i]);
     }
 
     // Update position

@@ -89,6 +89,12 @@ class EngineSimApplication {
 
     protected:
         void loadScript();
+        bool compileScript(
+            const std::string &scriptPath,
+            const std::string &logPath,
+            Engine **engine,
+            Vehicle **vehicle,
+            Transmission **transmission);
         void processEngineInput();
         void renderScene();
 

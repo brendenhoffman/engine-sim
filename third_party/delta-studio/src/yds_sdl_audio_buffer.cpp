@@ -1,6 +1,7 @@
 #include "../include/yds_sdl_audio_buffer.h"
 
-// TODO: this is identical to the DS8 impl...
+#include <cstdlib>
+#include <cstring>
 
 ysSdlAudioBuffer::ysSdlAudioBuffer() : ysAudioBuffer(API::Sdl) {
     m_buffer = nullptr;
@@ -34,7 +35,7 @@ ysError ysSdlAudioBuffer::EditBufferSegment(void *data, SampleOffset samples, Sa
     size_t offsetBytes = m_audioParameters.GetSizeFromSamples(offset);
     size_t totalBytes = m_audioParameters.GetSizeFromSamples(samples);
 
-    memcpy((char *)data + offsetBytes, data, samples);
+    memcpy((char *)m_buffer + offsetBytes, data, totalBytes);
 
     return YDS_ERROR_RETURN(ysError::None);
 }

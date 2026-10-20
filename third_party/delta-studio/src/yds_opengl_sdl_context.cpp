@@ -4,6 +4,8 @@
 #include "../include/yds_sdl_window.h"
 #include "../include/yds_sdl_window_system.h"
 
+#include <SDL3/SDL.h>
+
 ysOpenGLSdlContext::ysOpenGLSdlContext() : ysOpenGLVirtualContext(ysWindowSystem::Platform::Sdl) {
     m_device = nullptr;
 }
@@ -26,6 +28,10 @@ ysError ysOpenGLSdlContext::CreateRenderingContext(ysOpenGLDevice *device, ysWin
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, minor);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
     m_context = SDL_GL_CreateContext(sdlWindow->m_window);
+    if (m_context == nullptr) {
+        SDL_LogError(SDL_LOG_CATEGORY_VIDEO, "SDL_GL_CreateContext failed: %s", SDL_GetError());
+        return YDS_ERROR_RETURN(ysError::CouldNotCreateContext);
+    }
 
     LoadAllExtensions();
 
@@ -43,9 +49,8 @@ ysError ysOpenGLSdlContext::DestroyContext() {
 
     SDL_GL_MakeCurrent(nullptr, nullptr);
     if (m_context) {
-        SDL_GL_DeleteContext(m_context);
+        SDL_GL_DestroyContext(static_cast<SDL_GLContext>(m_context));
         m_context = nullptr;
-        //if (result == FALSE) return YDS_ERROR_RETURN(ysError::CouldNotDestroyContext);
     }
 
     return YDS_ERROR_RETURN(ysError::None);
@@ -87,8 +92,7 @@ ysError ysOpenGLSdlContext::SetContext(ysRenderingContext *realContext) {
         ysOpenGLSdlContext *realOpenglContext = static_cast<ysOpenGLSdlContext *>(realContext);
         ysSdlWindow *sdlWindow = static_cast<ysSdlWindow *>(realOpenglContext->m_targetWindow);
 
-        int result = SDL_GL_MakeCurrent(sdlWindow->m_window, realOpenglContext->m_context);
-        if (result != 0) {
+        if (!SDL_GL_MakeCurrent(sdlWindow->m_window, static_cast<SDL_GLContext>(realOpenglContext->m_context))) {
             return YDS_ERROR_RETURN(ysError::CouldNotActivateContext);
         }
     } else {

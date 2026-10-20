@@ -4,7 +4,7 @@
 #include "../include/yds_key_maps.h"
 #include "../include/yds_window_system.h"
 
-#include <SDL2/SDL.h>
+#include <SDL3/SDL.h>
 
 ysSdlInputSystem::ysSdlInputSystem() : ysInputSystem(Platform::Sdl) {
     /* void */
@@ -16,16 +16,16 @@ ysSdlInputSystem::~ysSdlInputSystem() {
 
 void ysSdlInputSystem::ProcessEvent(const SDL_Event &event) {
     switch (event.type) {
-        case SDL_KEYDOWN:
-        case SDL_KEYUP: {
+        case SDL_EVENT_KEY_DOWN:
+        case SDL_EVENT_KEY_UP: {
             auto &keyboardEvent = event.key;
             ysKeyboard *keyboard = GetKeyboard();
 
-            ysKey::Code index = keyboard->GetKeyMap(keyboardEvent.keysym.scancode);
+            ysKey::Code index = keyboard->GetKeyMap(keyboardEvent.scancode);
             const ysKey *key = keyboard->GetKey(index);
 
             ysKey::Variation newConf = key->m_configuration;
-            ysKey::State newState = event.type == SDL_KEYDOWN
+            ysKey::State newState = event.type == SDL_EVENT_KEY_DOWN
                 ? ysKey::State::DownTransition
                 : ysKey::State::UpTransition;
 
@@ -33,19 +33,21 @@ void ysSdlInputSystem::ProcessEvent(const SDL_Event &event) {
             break;
         }
 
-        case SDL_MOUSEMOTION: {
+        case SDL_EVENT_MOUSE_MOTION: {
             auto &motionEvent = event.motion;
             ysMouse *mouse = GetMouse();
 
             // Y is inverted vs what the Windows impl does
             const int height = m_windowSystem->GetWindow(0)->GetHeight();
-            mouse->SetOsPosition(motionEvent.x, height - motionEvent.y);
-            mouse->UpdatePosition(motionEvent.x, motionEvent.y, false);
+            const int x = static_cast<int>(motionEvent.x);
+            const int y = static_cast<int>(motionEvent.y);
+            mouse->SetOsPosition(x, height - y);
+            mouse->UpdatePosition(x, y, false);
             break;
         }
 
-        case SDL_MOUSEBUTTONDOWN:
-        case SDL_MOUSEBUTTONUP: {
+        case SDL_EVENT_MOUSE_BUTTON_DOWN:
+        case SDL_EVENT_MOUSE_BUTTON_UP: {
             auto &buttonEvent = event.button;
             ysMouse *mouse = GetMouse();
 
@@ -59,7 +61,7 @@ void ysSdlInputSystem::ProcessEvent(const SDL_Event &event) {
                 default: return; // We don't know how to handle this button so bail
             }
 
-            auto newState = event.type == SDL_MOUSEBUTTONDOWN
+            auto newState = event.type == SDL_EVENT_MOUSE_BUTTON_DOWN
                 ? ysMouse::ButtonState::DownTransition
                 : ysMouse::ButtonState::UpTransition;
 
@@ -67,13 +69,16 @@ void ysSdlInputSystem::ProcessEvent(const SDL_Event &event) {
             break;
         }
 
-        case SDL_MOUSEWHEEL: {
+        case SDL_EVENT_MOUSE_WHEEL: {
             auto &wheelEvent = event.wheel;
             ysMouse *mouse = GetMouse();
 
-            // Match the Windows impl by scaling by WHEEL_DELTA
+            // Whole notches (SDL accumulates smooth scrolling into integer_y), scaled by
+            // WHEEL_DELTA to match the Windows impl
             const int WHEEL_DELTA = 120;
-            mouse->UpdateWheel(wheelEvent.y * WHEEL_DELTA);
+            if (wheelEvent.integer_y != 0) {
+                mouse->UpdateWheel(wheelEvent.integer_y * WHEEL_DELTA);
+            }
             break;
         }
 

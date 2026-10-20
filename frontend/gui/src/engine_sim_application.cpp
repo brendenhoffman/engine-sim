@@ -22,6 +22,8 @@
 
 #include <chrono>
 #include <filesystem>
+#include <fstream>
+#include <iostream>
 #include <stdlib.h>
 #include <sstream>
 
@@ -598,48 +600,81 @@ const SimulationObject::ViewParameters &
     return m_viewParameters;
 }
 
-void EngineSimApplication::loadScript() {
-    Engine *engine = nullptr;
-    Vehicle *vehicle = nullptr;
-    Transmission *transmission = nullptr;
-
+bool EngineSimApplication::compileScript(
+    const std::string &scriptPath,
+    const std::string &logPath,
+    Engine **engine,
+    Vehicle **vehicle,
+    Transmission **transmission)
+{
     // Search for user defined assets first, then fallback to data
     std::vector<piranha::IrPath> searchPaths;
     searchPaths.push_back(m_userData.Append("assets").ToString());
     searchPaths.push_back(m_dataRoot.Append("assets").ToString());
     searchPaths.push_back(m_dataRoot.Append("es").ToString());
 
-    // Try and load the local version first, if not fallback to the default one in data
-    std::vector<piranha::IrPath> dataPaths;
-    dataPaths.push_back(m_userData.ToString());
-    dataPaths.push_back(m_dataRoot.ToString());
+    std::ofstream outputLog(logPath, std::ios::out);
 
-    for (const auto &dataPath : dataPaths) {
-        // Skip this path if the script doesn't exist
-        const auto script = dataPath.append("assets/main.mr");
-        if (!script.exists()) {
-            continue;
-        }
+    es_script::Compiler compiler;
+    compiler.initialize(searchPaths);
+    bool loaded = compiler.compile(scriptPath, outputLog);
+    if (loaded) {
+        const es_script::Compiler::Output output = compiler.execute();
 
-        const auto outputLogPath = m_outputPath.Append("error_log.log").ToString();
-        std::ofstream outputLog(outputLogPath, std::ios::out);
-
-        es_script::Compiler compiler;
-        compiler.initialize(searchPaths);
-        const bool compiled = compiler.compile(script.toString(), outputLog);
-        if (compiled) {
-            const es_script::Compiler::Output output = compiler.execute();
+        // A script can compile but never call main()/set_engine(), leaving nothing to simulate
+        loaded = (output.engine != nullptr);
+        if (loaded) {
             configure(output.applicationSettings);
+            *engine = output.engine;
+            *vehicle = output.vehicle;
+            *transmission = output.transmission;
+        }
+        else {
+            outputLog << scriptPath << ": script compiled but did not create an engine" << std::endl;
+        }
+    }
 
-            engine = output.engine;
-            vehicle = output.vehicle;
-            transmission = output.transmission;
+    compiler.destroy();
+    return loaded;
+}
+
+void EngineSimApplication::loadScript() {
+    Engine *engine = nullptr;
+    Vehicle *vehicle = nullptr;
+    Transmission *transmission = nullptr;
+
+    // The user's main.mr takes priority over the one shipped in data
+    const dbasic::Path userScript = m_userData.Append("assets/main.mr");
+    const dbasic::Path defaultScript = m_dataRoot.Append("assets/main.mr");
+    const dbasic::Path script = userScript.Exists() ? userScript : defaultScript;
+    const std::string logPath = m_outputPath.Append("error_log.log").ToString();
+
+    std::string failureMessage;
+    if (!compileScript(script.ToString(), logPath, &engine, &vehicle, &transmission)) {
+        std::cerr << "engine-sim: failed to load " << script.ToString() << ":\n";
+        std::ifstream log(logPath);
+        std::cerr << log.rdbuf() << std::flush;
+
+        if (m_iceEngine != nullptr) {
+            // Reload failed: keep the engine that's already running
+            std::cerr << "engine-sim: keeping the current engine" << std::endl;
+            m_infoCluster->setLogMessage("SCRIPT FAILED, SEE " + logPath);
+            return;
         }
 
-        compiler.destroy();
+        // Nothing running yet: fall back to the shipped default, keeping the user's error log intact
+        failureMessage = "SCRIPT FAILED, LOADED DEFAULT. SEE " + logPath;
+        if (script.ToString() == defaultScript.ToString()
+            || !compileScript(
+                defaultScript.ToString(),
+                m_outputPath.Append("default_error_log.log").ToString(),
+                &engine, &vehicle, &transmission))
+        {
+            std::cerr << "engine-sim: the default engine script failed too, check " << m_dataRoot.ToString() << std::endl;
+            std::exit(1);
+        }
 
-        // Don't try any other scripts or we'd nuke the error log
-        break;
+        std::cerr << "engine-sim: loaded the default engine instead" << std::endl;
     }
 
     if (vehicle == nullptr) {
@@ -666,6 +701,10 @@ void EngineSimApplication::loadScript() {
 
     loadEngine(engine, vehicle, transmission);
     refreshUserInterface();
+
+    if (!failureMessage.empty()) {
+        m_infoCluster->setLogMessage(failureMessage);
+    }
 }
 
 void EngineSimApplication::processEngineInput() {
