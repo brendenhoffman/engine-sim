@@ -6,6 +6,7 @@
 #include <nlohmann/json.hpp>
 
 #include <atomic>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -20,6 +21,7 @@ class EngineHost;
 //   {"cmd":"load","script":"/abs/path/engine.mr"}      load an engine ("" for the default)
 //   {"cmd":"retune"}                                   re-profile the engine for BeamNG
 //   {"cmd":"control","ignition":true,"starter":false,"throttle":0.2}
+//   {"cmd":"shutdown"}                                 ask engine-sim to exit
 //
 // Replies carry "ok" (and "error" when false), plus "id" if the request had one.
 // Try it from a shell:  echo '{"cmd":"status"}' | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/engine-sim.sock
@@ -40,6 +42,9 @@ public:
 
     const std::string &socketPath() const { return m_socketPath; }
 
+    // Called (on the server thread) for "shutdown"; set before start()
+    void setShutdownHandler(std::function<void()> handler) { m_shutdownHandler = std::move(handler); }
+
     HostSettings settings() {
         std::lock_guard<std::mutex> lock(m_settingsMutex);
         return m_settings;
@@ -59,6 +64,7 @@ private:
 
 private:
     EngineHost *m_host;
+    std::function<void()> m_shutdownHandler;
     std::string m_settingsFile;
 
     std::mutex m_settingsMutex;

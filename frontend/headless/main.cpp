@@ -158,10 +158,10 @@ int main(int argc, char **argv) {
 
     if (options.bridge) {
         if (host.enableBridge()) {
-            std::cerr << "engine-sim: waiting for BeamNG on 127.0.0.1:" << BridgeTransport::DefaultPort << std::endl;
+            std::cerr << "engine-sim: waiting for BeamNG on 127.0.0.1:" << BridgeTransport::portFromEnvironment() << std::endl;
         }
         else {
-            std::cerr << "engine-sim: could not listen on port " << BridgeTransport::DefaultPort
+            std::cerr << "engine-sim: could not listen on port " << BridgeTransport::portFromEnvironment()
                       << " (another engine-sim running?); BeamNG bridge disabled" << std::endl;
         }
     }
@@ -169,6 +169,7 @@ int main(int argc, char **argv) {
     applySettings(&host, settings);
 
     ControlServer control(&host, settings, settingsFile);
+    control.setShutdownHandler([] { g_quit = true; });
     std::string controlError;
     if (control.start(ControlServer::defaultSocketPath(), &controlError)) {
         std::cerr << "engine-sim: control socket at " << control.socketPath() << std::endl;

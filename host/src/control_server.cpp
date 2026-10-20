@@ -191,6 +191,11 @@ json ControlServer::handle(const json &request) {
     if (cmd == "set") return setSettings(request);
     if (cmd == "load") return load(request);
     if (cmd == "control") return control(request);
+    if (cmd == "shutdown") {
+        if (!m_shutdownHandler) return failure("shutdown isn't supported here");
+        m_shutdownHandler();
+        return { { "ok", true } };
+    }
     if (cmd == "retune") {
         auto lock = m_host->lock();
         if (m_host->bridge() == nullptr) return failure("the BeamNG bridge isn't running");

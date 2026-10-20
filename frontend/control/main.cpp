@@ -2,6 +2,7 @@
 // headless). Talks to it over the control socket; everything applies live.
 
 #include "control_client.h"
+#include "launcher.h"
 
 #include <imgui.h>
 #include <imgui_impl_sdl3.h>
@@ -16,6 +17,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 
 using nlohmann::json;
 using clock_type = std::chrono::steady_clock;
@@ -149,13 +151,41 @@ void openEnginePicker(SDL_Window *window, const std::string &currentScript) {
 
 // ------------------------------------------------------------------ the panel
 
-void drawPanel(SDL_Window *window, ControlClient &client, SettingsEditor &editor) {
+void startEngine(EngineLauncher &launcher, EngineLauncher::Mode mode, std::string *error) {
+    error->clear();
+    launcher.start(mode, error);
+}
+
+void drawPanel(SDL_Window *window, ControlClient &client, SettingsEditor &editor, EngineLauncher &launcher, const std::string &socketPath) {
+    static std::string launchError;
     const ControlClient::Snapshot snap = client.snapshot();
+    const bool starting = launcher.running();
 
     if (!snap.connected) {
-        ImGui::TextColored(Orange, "Waiting for engine-sim...");
+        if (starting) {
+            ImGui::TextColored(Orange, "Starting engine-sim...");
+            return;
+        }
+
+        ImGui::TextColored(Orange, "engine-sim isn't running");
         ImGui::Spacing();
-        ImGui::TextWrapped("Start the engine-sim GUI or engine-sim-headless. This panel connects to it automatically.");
+        if (ImGui::Button("Start in the background")) startEngine(launcher, EngineLauncher::Mode::Headless, &launchError);
+        help("engine-sim-headless: no window, just the simulation. Stops when you close this panel.");
+        ImGui::SameLine();
+        if (ImGui::Button("Start with its window")) startEngine(launcher, EngineLauncher::Mode::Window, &launchError);
+        help("The full engine-sim window with the engine view and gauges. Stops when you close this panel.");
+
+        ImGui::Spacing();
+        ImGui::TextColored(Muted, "Or start engine-sim yourself; this panel connects to it automatically.");
+
+        const std::string &failure = launchError.empty() ? launcher.exitMessage() : launchError;
+        if (!failure.empty()) {
+            ImGui::Spacing();
+            ImGui::PushStyleColor(ImGuiCol_Text, Red);
+            ImGui::TextWrapped("%s", failure.c_str());
+            ImGui::PopStyleColor();
+            ImGui::TextColored(Muted, "Full log: %s", EngineLauncher::logPath().c_str());
+        }
         return;
     }
 
@@ -177,6 +207,10 @@ void drawPanel(SDL_Window *window, ControlClient &client, SettingsEditor &editor
     else if (bridge.value("tuning", false)) ImGui::TextColored(Orange, "Profiling engine for BeamNG");
     else if (linked) ImGui::TextColored(Green, "Linked to BeamNG");
     else ImGui::TextColored(Muted, "Waiting for BeamNG");
+
+    const char *stopLabel = "Stop engine-sim";
+    ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - ImGui::CalcTextSize(stopLabel).x - ImGui::GetStyle().FramePadding.x * 2);
+    if (ImGui::SmallButton(stopLabel)) requestShutdown(socketPath);
 
     ImGui::Separator();
 
@@ -298,7 +332,25 @@ void drawPanel(SDL_Window *window, ControlClient &client, SettingsEditor &editor
 
 } // namespace
 
-int main(int, char **) {
+int main(int argc, char **argv) {
+    // --start headless|window: start engine-sim unless it's already running
+    std::optional<EngineLauncher::Mode> startMode;
+    for (int i = 1; i < argc; ++i) {
+        const std::string_view arg = argv[i];
+        if (arg == "--start" && i + 1 < argc) {
+            const std::string_view mode = argv[++i];
+            if (mode == "headless") startMode = EngineLauncher::Mode::Headless;
+            else if (mode == "window" || mode == "gui") startMode = EngineLauncher::Mode::Window;
+            else { std::fprintf(stderr, "--start takes headless or window\n"); return 2; }
+        }
+        else {
+            std::printf("Usage: %s [--start headless|window]\n\n"
+                        "Settings window for a running engine-sim. With --start, also starts engine-sim\n"
+                        "(unless it's already running) and stops it again when the window closes.\n", argv[0]);
+            return arg == "--help" || arg == "-h" ? 0 : 2;
+        }
+    }
+
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         std::fprintf(stderr, "engine-sim-control: SDL_Init failed: %s\n", SDL_GetError());
         return 1;
@@ -341,8 +393,15 @@ int main(int, char **) {
     init.MSAASamples = SDL_GPU_SAMPLECOUNT_1;
     ImGui_ImplSDLGPU3_Init(&init);
 
-    ControlClient client(ControlClient::defaultSocketPath());
+    const std::string socketPath = ControlClient::defaultSocketPath();
+    ControlClient client(socketPath);
     SettingsEditor editor(&client);
+
+    EngineLauncher launcher;
+    if (startMode && !std::filesystem::exists(socketPath)) {
+        std::string error;
+        if (!launcher.start(*startMode, &error)) std::fprintf(stderr, "engine-sim-control: %s\n", error.c_str());
+    }
 
     bool done = false;
     while (!done) {
@@ -373,7 +432,7 @@ int main(int, char **) {
         ImGui::SetNextWindowSize(viewport->WorkSize);
         ImGui::Begin("engine-sim control", nullptr,
             ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
-        drawPanel(window, client, editor);
+        drawPanel(window, client, editor, launcher, socketPath);
         ImGui::End();
 
         ImGui::Render();
@@ -396,6 +455,10 @@ int main(int, char **) {
         }
         SDL_SubmitGPUCommandBuffer(commands);
     }
+
+    // Whatever this panel started, it stops
+    SDL_HideWindow(window);
+    launcher.stop(socketPath);
 
     SDL_WaitForGPUIdle(gpu);
     ImGui_ImplSDL3_Shutdown();

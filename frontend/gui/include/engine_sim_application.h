@@ -28,6 +28,7 @@
 #include "engine_host.h"
 #include "host_settings.h"
 
+#include <atomic>
 #include <cstdint>
 #include <deque>
 #include <memory>
@@ -140,6 +141,7 @@ class EngineSimApplication {
         std::unique_ptr<ControlServer> m_control;
         HostSettings m_startupSettings;
         std::string m_settingsFile;
+        std::atomic<bool> m_shutdownRequested{false};
 
         std::string m_assetPath;
 

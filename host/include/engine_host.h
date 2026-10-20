@@ -80,7 +80,7 @@ public:
     LoadResult loadScript(const std::string &scriptPath = "");
 
     // Listens for BeamNG on 127.0.0.1:port. Call before start(); false if the port is taken.
-    bool enableBridge(int port = BridgeTransport::DefaultPort, int audioPort = BridgeTransport::DefaultAudioPort);
+    bool enableBridge(int port = BridgeTransport::portFromEnvironment(), int audioPort = BridgeTransport::audioPortFromEnvironment());
 
     // Following BeamNG right now (safe without the lock)
     bool bridgeActive() const { return m_bridge != nullptr && m_bridge->active(); }

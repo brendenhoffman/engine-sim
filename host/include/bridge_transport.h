@@ -30,6 +30,11 @@ public:
     static constexpr int DefaultPort = 4570;
     static constexpr int DefaultAudioPort = 4571;
 
+    // ENGINE_SIM_BRIDGE_PORT / ENGINE_SIM_AUDIO_PORT, else the defaults (tests use these to
+    // stay clear of a running game)
+    static int portFromEnvironment();
+    static int audioPortFromEnvironment();
+
     struct Input {
         float rpm = 0;
         float throttle = 0;

@@ -4,6 +4,7 @@
 #include <arpa/inet.h>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <poll.h>
 #include <sys/socket.h>
@@ -22,6 +23,17 @@ namespace {
         return addr;
     }
 }
+
+namespace {
+    int envPort(const char *name, int fallback) {
+        const char *value = std::getenv(name);
+        const int port = value != nullptr ? std::atoi(value) : 0;
+        return (port > 0 && port < 65536) ? port : fallback;
+    }
+}
+
+int BridgeTransport::portFromEnvironment() { return envPort("ENGINE_SIM_BRIDGE_PORT", DefaultPort); }
+int BridgeTransport::audioPortFromEnvironment() { return envPort("ENGINE_SIM_AUDIO_PORT", DefaultAudioPort); }
 
 BridgeTransport::BridgeTransport() {
     /* void */

@@ -18,6 +18,7 @@ executable(
   'engine-sim-control',
   files(
     'control_client.cpp',
+    'launcher.cpp',
     'main.cpp',
   ),
   dependencies: [

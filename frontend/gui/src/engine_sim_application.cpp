@@ -168,13 +168,14 @@ void EngineSimApplication::initialize() {
     reloadEngine(m_startupSettings.script);
 
     if (!m_host->enableBridge()) {
-        std::cerr << "engine-sim: could not listen on port " << BridgeTransport::DefaultPort
+        std::cerr << "engine-sim: could not listen on port " << BridgeTransport::portFromEnvironment()
                   << " (another engine-sim running?); BeamNG bridge disabled" << std::endl;
     }
 
     applySettings(m_host.get(), m_startupSettings);
 
     m_control = std::make_unique<ControlServer>(m_host.get(), m_startupSettings, m_settingsFile);
+    m_control->setShutdownHandler([this] { m_shutdownRequested = true; });
     std::string controlError;
     if (!m_control->start(ControlServer::defaultSocketPath(), &controlError)) {
         std::cerr << "engine-sim: " << controlError << "; control socket disabled" << std::endl;
@@ -363,7 +364,7 @@ void EngineSimApplication::run() {
     while (true) {
         m_engine.StartFrame();
 
-        if (!m_engine.IsOpen()) break;
+        if (!m_engine.IsOpen() || m_shutdownRequested) break;
         if (m_engine.ProcessKeyDown(ysKey::Code::Escape)) {
             break;
         }
