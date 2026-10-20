@@ -1,5 +1,7 @@
 option('gui', type: 'feature', value: 'enabled',
   description: 'Build the full GUI (needs SDL and OpenGL)')
+option('headless', type: 'boolean', value: true,
+  description: 'Build engine-sim-headless (no graphics, no SDL)')
 option('tests', type: 'feature', value: 'auto',
   description: 'Build unit tests (needs gtest)')
 option('data_root', type: 'string', value: '',

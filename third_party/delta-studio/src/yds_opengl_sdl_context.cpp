@@ -33,6 +33,11 @@ ysError ysOpenGLSdlContext::CreateRenderingContext(ysOpenGLDevice *device, ysWin
         return YDS_ERROR_RETURN(ysError::CouldNotCreateContext);
     }
 
+    // Sync to the display (adaptive if the driver supports it)
+    if (!SDL_GL_SetSwapInterval(-1)) {
+        SDL_GL_SetSwapInterval(1);
+    }
+
     LoadAllExtensions();
 
     m_device = device;

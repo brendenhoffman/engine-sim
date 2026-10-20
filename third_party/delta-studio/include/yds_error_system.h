@@ -41,8 +41,9 @@ public:
 protected:
     ysDynamicArray<ysErrorHandler, 4> m_errorHandlers;
 
-    int m_stackLevel;
-    const char *m_callStack[MAX_STACK_LEVEL];
+    // Each thread tracks its own call stack (the simulation thread calls into delta too)
+    static thread_local int m_stackLevel;
+    static thread_local const char *m_callStack[MAX_STACK_LEVEL];
 };
 
 #define _YDS_WIDE(_String) L ## _String

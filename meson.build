@@ -33,9 +33,13 @@ build_info.set_quoted('ENGINE_SIM_SOURCE_DATA_ROOT', meson.project_source_root()
 subdir('third_party')
 subdir('sim')
 subdir('scripting')
+subdir('host')
 
 if build_gui
   subdir('frontend/gui')
+endif
+if get_option('headless')
+  subdir('frontend/headless')
 endif
 
 install_subdir('data', install_dir: data_root, strip_directory: true)
@@ -48,6 +52,7 @@ endif
 summary(
   {
     'GUI': build_gui,
+    'Headless': get_option('headless'),
     'Tests': gtest_dep.found(),
     'Data root': data_root,
   },

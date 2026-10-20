@@ -1,10 +1,4 @@
 # Full GUI: SDL + OpenGL via delta-studio
-build_info_h = configure_file(
-  input: 'include/build_info.h.in',
-  output: 'build_info.h',
-  configuration: build_info,
-)
-
 executable(
   'engine-sim',
   files(
@@ -41,8 +35,7 @@ executable(
     'src/ui_math.cpp',
     'src/ui_utilities.cpp',
   ),
-  build_info_h,
   include_directories: include_directories('include'),
-  dependencies: [sim_dep, scripting_dep, delta_dep],
+  dependencies: [host_dep, delta_dep],
   install: true,
 )

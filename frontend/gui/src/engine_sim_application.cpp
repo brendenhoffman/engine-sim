@@ -14,7 +14,6 @@
 #include "feedback_comb_filter.h"
 #include "utilities.h"
 
-#include "compiler.h"
 
 #include <delta-studio/include/yds_error_handler.h>
 
@@ -41,8 +40,6 @@ EngineSimApplication::EngineSimApplication() {
 
     m_geometryVertexBuffer = nullptr;
     m_geometryIndexBuffer = nullptr;
-
-    m_paused = false;
 
     m_background = ysColor::srgbiToLinear(0x0E1012);
     m_foreground = ysColor::srgbiToLinear(0xFFFFFF);
@@ -75,9 +72,6 @@ EngineSimApplication::EngineSimApplication() {
     m_iceEngine = nullptr;
     m_mainRenderTarget = nullptr;
 
-    m_vehicle = nullptr;
-    m_transmission = nullptr;
-
     m_oscillatorSampleOffset = 0;
     m_gameWindowHeight = 256;
     m_screenWidth = 256;
@@ -95,36 +89,12 @@ EngineSimApplication::~EngineSimApplication() {
     /* void */
 }
 
-// $XDG_VAR/engine-sim, falling back to ~/<fallback>/engine-sim; created if missing
-static dbasic::Path xdgDir(const char *variable, const char *fallback) {
-    const char *base = getenv(variable);
-    dbasic::Path path = (base != nullptr && base[0] != '\0')
-        ? dbasic::Path(base)
-        : dbasic::Path(getenv("HOME")).Append(fallback);
-    path = path.Append("engine-sim");
-    if (!path.Exists()) {
-        std::filesystem::create_directories(path.ToString());
-    }
-
-    return path;
-}
-
 void EngineSimApplication::initialize(void *instance, ysContextObject::DeviceAPI api) {
-    // Fixed data: env override, then the installed copy, then the source tree (for running from a build dir)
-    if (getenv("ENGINE_SIM_DATA_ROOT") != nullptr) {
-        m_dataRoot = getenv("ENGINE_SIM_DATA_ROOT");
-    } else if (dbasic::Path(ENGINE_SIM_DATA_ROOT).Exists()) {
-        m_dataRoot = ENGINE_SIM_DATA_ROOT;
-    } else {
-        m_dataRoot = ENGINE_SIM_SOURCE_DATA_ROOT;
-    }
+    const HostPaths paths = HostPaths::resolve();
+    m_host = std::make_unique<EngineHost>(paths);
 
-    // User data (input files that aren't from fixed data) and output (logs)
-    m_userData = xdgDir("XDG_DATA_HOME", ".local/share");
-    m_outputPath = xdgDir("XDG_STATE_HOME", ".local/state");
-
-    const std::string enginePath = m_dataRoot.Append("delta").ToString();
-    m_assetPath = m_dataRoot.Append("assets").ToString();
+    const std::string enginePath = paths.dataRoot + "/delta";
+    m_assetPath = paths.dataRoot + "/assets";
 
     m_engine.GetConsole()->SetDefaultFontDirectory(enginePath + "/fonts/");
 
@@ -185,7 +155,12 @@ void EngineSimApplication::initialize() {
     m_textRenderer.SetRenderer(m_engine.GetUiRenderer());
     m_textRenderer.SetFont(m_engine.GetConsole()->GetFont());
 
-    loadScript();
+    m_host->setEngineChangedHook([this] { onEngineChanged(); });
+    m_host->setStepHook([this] { m_oscCluster->sample(); });
+    m_host->setAudioHook([this](const int16_t *samples, int count) { onAudio(samples, count); });
+    m_host->setFrameHook([this](const EngineHost::FrameStats &stats) { onFrame(stats); });
+
+    reloadEngine();
 
     m_audioBuffer.initialize(44100, 44100);
     m_audioBuffer.m_writePointer = (int)(44100 * 0.1);
@@ -198,16 +173,22 @@ void EngineSimApplication::initialize() {
         m_engine.GetAudioDevice()->CreateBuffer(&params, 44100);
 
     m_audioSource = m_engine.GetAudioDevice()->CreateSource(m_outputAudioBuffer);
-    m_audioSource->SetMode((m_simulator->getEngine() != nullptr)
-        ? ysAudioSource::Mode::Loop
-        : ysAudioSource::Mode::Stop);
-    m_audioSource->SetPan(0.0f);
-    m_audioSource->SetVolume(1.0f);
+    if (m_audioSource != nullptr) {
+        m_audioSource->SetMode(ysAudioSource::Mode::Loop);
+        m_audioSource->SetPan(0.0f);
+        m_audioSource->SetVolume(1.0f);
+    }
+    else {
+        std::cerr << "engine-sim: no audio output, running silent" << std::endl;
+    }
+
+    m_host->start();
 
 }
 
-void EngineSimApplication::process(float frame_dt) {
-    frame_dt = static_cast<float>(clamp(frame_dt, 1 / 200.0f, 1 / 30.0f));
+void EngineSimApplication::process() {
+    // Per-frame UI work only; the simulation itself runs on the host's thread
+    const float frame_dt = static_cast<float>(clamp(m_engine.GetFrameLength(), 1 / 200.0f, 1 / 30.0f));
 
     double speed = 1.0 / 1.0;
     if (m_engine.IsKeyDown(ysKey::Code::N1)) {
@@ -236,27 +217,43 @@ void EngineSimApplication::process(float frame_dt) {
         m_displayAngle = 0.0f;
     }
 
-    m_simulator->setSimulationSpeed(speed);
+    m_host->setSimulationSpeed(speed);
+}
 
-    const double avgFramerate = clamp(m_engine.GetAverageFramerate(), 30.0f, 1000.0f);
-    m_simulator->startFrame(1 / avgFramerate);
-
-    auto proc_t0 = std::chrono::steady_clock::now();
-    const int iterationCount = m_simulator->getFrameIterationCount();
-    while (m_simulator->simulateStep()) {
-        m_oscCluster->sample();
+void EngineSimApplication::onFrame(const EngineHost::FrameStats &stats) {
+    if (stats.iterations > 0) {
+        m_performanceCluster->addTimePerTimestepSample(stats.processingSeconds / stats.iterations);
     }
 
-    auto proc_t1 = std::chrono::steady_clock::now();
+    m_performanceCluster->addInputBufferUsageSample(stats.inputLatency / stats.inputLatencyTarget);
+}
 
-    m_simulator->endFrame();
+void EngineSimApplication::onAudio(const int16_t *samples, int count) {
+    for (int i = 0; i < count; ++i) {
+        if (m_oscillatorSampleOffset % 4 == 0) {
+            m_oscCluster->getAudioWaveformOscilloscope()->addDataPoint(
+                m_oscillatorSampleOffset,
+                samples[i] / (float)(INT16_MAX));
+        }
 
-    auto duration = proc_t1 - proc_t0;
-    if (iterationCount > 0) {
-        m_performanceCluster->addTimePerTimestepSample(
-            (duration.count() / 1E9) / iterationCount);
+        m_oscillatorSampleOffset = (m_oscillatorSampleOffset + 1) % (44100 / 10);
     }
 
+    if (m_audioSource == nullptr) return;
+
+    m_localAudio.insert(m_localAudio.end(), samples, samples + count);
+
+    // Cap the backlog so latency can't creep up if the device falls behind
+    constexpr size_t MaxBacklog = 44100 / 4;
+    if (m_localAudio.size() > MaxBacklog) {
+        m_localAudio.erase(m_localAudio.begin(), m_localAudio.end() - MaxBacklog);
+    }
+
+    feedLocalAudio();
+}
+
+void EngineSimApplication::feedLocalAudio() {
+    // Keep the device's ring buffer ~100 ms ahead of its play position
     const SampleOffset safeWritePosition = m_audioSource->GetCurrentWritePosition();
     const SampleOffset writePosition = m_audioBuffer.m_writePointer;
 
@@ -277,29 +274,17 @@ void EngineSimApplication::process(float frame_dt) {
         maxWrite = 0;
     }
 
-    int16_t *samples = new int16_t[maxWrite];
-    const int readSamples = m_simulator->readAudioOutput(maxWrite, samples);
-
-    for (SampleOffset i = 0; i < (SampleOffset)readSamples && i < maxWrite; ++i) {
-        const int16_t sample = samples[i];
-        if (m_oscillatorSampleOffset % 4 == 0) {
-            m_oscCluster->getAudioWaveformOscilloscope()->addDataPoint(
-                m_oscillatorSampleOffset,
-                sample / (float)(INT16_MAX));
-        }
-
-        m_audioBuffer.writeSample(sample, m_audioBuffer.m_writePointer, (int)i);
-
-        m_oscillatorSampleOffset = (m_oscillatorSampleOffset + 1) % (44100 / 10);
+    const SampleOffset writeCount = std::min<SampleOffset>(maxWrite, static_cast<SampleOffset>(m_localAudio.size()));
+    for (SampleOffset i = 0; i < writeCount; ++i) {
+        m_audioBuffer.writeSample(m_localAudio[i], m_audioBuffer.m_writePointer, (int)i);
     }
+    m_localAudio.erase(m_localAudio.begin(), m_localAudio.begin() + writeCount);
 
-    delete[] samples;
-
-    if (readSamples > 0) {
+    if (writeCount > 0) {
         SampleOffset size0, size1;
         void *data0, *data1;
         m_audioSource->LockBufferSegment(
-            m_audioBuffer.m_writePointer, readSamples, &data0, &size0, &data1, &size1);
+            m_audioBuffer.m_writePointer, writeCount, &data0, &size0, &data1, &size1);
 
         m_audioBuffer.copyBuffer(
             reinterpret_cast<int16_t *>(data0), m_audioBuffer.m_writePointer, size0);
@@ -309,11 +294,9 @@ void EngineSimApplication::process(float frame_dt) {
             size1);
 
         m_audioSource->UnlockBufferSegments(data0, size0, data1, size1);
-        m_audioBuffer.commitBlock(readSamples);
+        m_audioBuffer.commitBlock(writeCount);
     }
 
-    m_performanceCluster->addInputBufferUsageSample(
-        (double)m_simulator->getSynthesizerInputLatency() / m_simulator->getSynthesizerInputLatencyTarget());
     m_performanceCluster->addAudioLatencySample(
         m_audioBuffer.offsetDelta(m_audioSource->GetCurrentWritePosition(), m_audioBuffer.m_writePointer) / (44100 * 0.1));
 }
@@ -361,12 +344,11 @@ void EngineSimApplication::run() {
         }
 
         if (m_engine.ProcessKeyDown(ysKey::Code::Return)) {
-            m_audioSource->SetMode(ysAudioSource::Mode::Stop);
-            loadScript();
-            if (m_simulator->getEngine() != nullptr) {
-                m_audioSource->SetMode(ysAudioSource::Mode::Loop);
-            }
+            reloadEngine();
         }
+
+        // Everything from here to the end of renderScene() reads or changes the simulation
+        std::unique_lock<std::mutex> simulationLock = m_host->lock();
 
         if (m_engine.ProcessKeyDown(ysKey::Code::Tab)) {
             m_screen++;
@@ -389,22 +371,25 @@ void EngineSimApplication::run() {
         m_screenWidth = m_engine.GetGameWindow()->GetScreenWidth();
 
         processEngineInput();
-
-        if (!m_paused || m_engine.ProcessKeyDown(ysKey::Code::Right)) {
-            process(m_engine.GetFrameLength());
-        }
+        process();
 
         m_uiManager.update(m_engine.GetFrameLength());
 
         renderScene();
 
+        // Presenting can block on vsync; let the simulation run meanwhile
+        simulationLock.unlock();
+
         m_engine.EndFrame();
     }
 
-    m_simulator->endAudioRenderingThread();
+    m_host->stop();
 }
 
 void EngineSimApplication::destroy() {
+    m_host->stop();
+    destroyObjects();
+
     m_shaderSet.Destroy();
 
     m_engine.GetDevice()->DestroyGPUBuffer(m_geometryVertexBuffer);
@@ -413,85 +398,28 @@ void EngineSimApplication::destroy() {
     m_assetManager.Destroy();
     m_engine.Destroy();
 
-    m_simulator->destroy();
+    m_host.reset();
+    m_simulator = nullptr;
+    m_iceEngine = nullptr;
     m_audioBuffer.destroy();
 
     m_geometryGenerator.destroy();
 }
 
-void EngineSimApplication::loadEngine(
-    Engine *engine,
-    Vehicle *vehicle,
-    Transmission *transmission)
-{
+void EngineSimApplication::onEngineChanged() {
+    // Called with the host lock held, right before the old engine is freed
     destroyObjects();
 
-    if (m_simulator != nullptr) {
-        m_simulator->releaseSimulation();
-        delete m_simulator;
-    }
+    m_iceEngine = m_host->engine();
+    m_simulator = m_host->simulator();
 
-    if (m_vehicle != nullptr) {
-        delete m_vehicle;
-        m_vehicle = nullptr;
-    }
+    configure(m_host->applicationSettings());
+    createObjects(m_iceEngine);
+    m_viewParameters.Layer0 = 0;
+    m_viewParameters.Layer1 = m_iceEngine->getMaxDepth();
 
-    if (m_transmission != nullptr) {
-        delete m_transmission;
-        m_transmission = nullptr;
-    }
-
-    if (m_iceEngine != nullptr) {
-        m_iceEngine->destroy();
-        delete m_iceEngine;
-    }
-
-    m_iceEngine = engine;
-    m_vehicle = vehicle;
-    m_transmission = transmission;
-
-    m_simulator = engine->createSimulator(vehicle, transmission);
-
-    if (engine == nullptr || vehicle == nullptr || transmission == nullptr) {
-        m_iceEngine = nullptr;
-        m_viewParameters.Layer1 = 0;
-
-        return;
-    }
-
-    createObjects(engine);
-
-    m_viewParameters.Layer1 = engine->getMaxDepth();
-    engine->calculateDisplacement();
-
-    m_simulator->setSimulationFrequency(engine->getSimulationFrequency());
-
-    Synthesizer::AudioParameters audioParams = m_simulator->synthesizer().getAudioParameters();
-    audioParams.inputSampleNoise = static_cast<float>(engine->getInitialJitter());
-    audioParams.airNoise = static_cast<float>(engine->getInitialNoise());
-    audioParams.dF_F_mix = static_cast<float>(engine->getInitialHighFrequencyGain());
-    m_simulator->synthesizer().setAudioParameters(audioParams);
-
-    for (int i = 0; i < engine->getExhaustSystemCount(); ++i) {
-        ImpulseResponse *response = engine->getExhaustSystem(i)->getImpulseResponse();
-
-        ysAudioWaveFile waveFile;
-        waveFile.OpenFile(response->getFilename().c_str());
-        waveFile.InitializeInternalBuffer(waveFile.GetSampleCount());
-        waveFile.FillBuffer(0);
-        waveFile.CloseFile();
-
-        m_simulator->synthesizer().initializeImpulseResponse(
-            reinterpret_cast<const int16_t *>(waveFile.GetBuffer()),
-            waveFile.GetSampleCount(),
-            response->getVolume(),
-            i
-        );
-
-        waveFile.DestroyInternalBuffer();
-    }
-
-    m_simulator->startAudioRenderingThread();
+    m_dynoSpeed = 0;
+    refreshUserInterface();
 }
 
 void EngineSimApplication::drawGenerated(
@@ -600,110 +528,23 @@ const SimulationObject::ViewParameters &
     return m_viewParameters;
 }
 
-bool EngineSimApplication::compileScript(
-    const std::string &scriptPath,
-    const std::string &logPath,
-    Engine **engine,
-    Vehicle **vehicle,
-    Transmission **transmission)
-{
-    // Search for user defined assets first, then fallback to data
-    std::vector<piranha::IrPath> searchPaths;
-    searchPaths.push_back(m_userData.Append("assets").ToString());
-    searchPaths.push_back(m_dataRoot.Append("assets").ToString());
-    searchPaths.push_back(m_dataRoot.Append("es").ToString());
-
-    std::ofstream outputLog(logPath, std::ios::out);
-
-    es_script::Compiler compiler;
-    compiler.initialize(searchPaths);
-    bool loaded = compiler.compile(scriptPath, outputLog);
-    if (loaded) {
-        const es_script::Compiler::Output output = compiler.execute();
-
-        // A script can compile but never call main()/set_engine(), leaving nothing to simulate
-        loaded = (output.engine != nullptr);
-        if (loaded) {
-            configure(output.applicationSettings);
-            *engine = output.engine;
-            *vehicle = output.vehicle;
-            *transmission = output.transmission;
-        }
-        else {
-            outputLog << scriptPath << ": script compiled but did not create an engine" << std::endl;
-        }
+void EngineSimApplication::reloadEngine(const std::string &scriptPath) {
+    // The current engine keeps running (and sounding) while the new script compiles
+    const EngineHost::LoadResult result = m_host->loadScript(scriptPath);
+    if (!result.errors.empty()) {
+        std::cerr << "engine-sim: " << result.script << " failed to load:\n" << result.errors << std::flush;
     }
 
-    compiler.destroy();
-    return loaded;
-}
-
-void EngineSimApplication::loadScript() {
-    Engine *engine = nullptr;
-    Vehicle *vehicle = nullptr;
-    Transmission *transmission = nullptr;
-
-    // The user's main.mr takes priority over the one shipped in data
-    const dbasic::Path userScript = m_userData.Append("assets/main.mr");
-    const dbasic::Path defaultScript = m_dataRoot.Append("assets/main.mr");
-    const dbasic::Path script = userScript.Exists() ? userScript : defaultScript;
-    const std::string logPath = m_outputPath.Append("error_log.log").ToString();
-
-    std::string failureMessage;
-    if (!compileScript(script.ToString(), logPath, &engine, &vehicle, &transmission)) {
-        std::cerr << "engine-sim: failed to load " << script.ToString() << ":\n";
-        std::ifstream log(logPath);
-        std::cerr << log.rdbuf() << std::flush;
-
-        if (m_iceEngine != nullptr) {
-            // Reload failed: keep the engine that's already running
-            std::cerr << "engine-sim: keeping the current engine" << std::endl;
-            m_infoCluster->setLogMessage("SCRIPT FAILED, SEE " + logPath);
-            return;
-        }
-
-        // Nothing running yet: fall back to the shipped default, keeping the user's error log intact
-        failureMessage = "SCRIPT FAILED, LOADED DEFAULT. SEE " + logPath;
-        if (script.ToString() == defaultScript.ToString()
-            || !compileScript(
-                defaultScript.ToString(),
-                m_outputPath.Append("default_error_log.log").ToString(),
-                &engine, &vehicle, &transmission))
-        {
-            std::cerr << "engine-sim: the default engine script failed too, check " << m_dataRoot.ToString() << std::endl;
-            std::exit(1);
-        }
-
-        std::cerr << "engine-sim: loaded the default engine instead" << std::endl;
+    if (!result.engineLoaded) {
+        std::cerr << "engine-sim: " << result.message << std::endl;
+        std::exit(1);
     }
 
-    if (vehicle == nullptr) {
-        Vehicle::Parameters vehParams;
-        vehParams.mass = units::mass(1597, units::kg);
-        vehParams.diffRatio = 3.42;
-        vehParams.tireRadius = units::distance(10, units::inch);
-        vehParams.dragCoefficient = 0.25;
-        vehParams.crossSectionArea = units::distance(6.0, units::foot) * units::distance(6.0, units::foot);
-        vehParams.rollingResistance = 2000.0;
-        vehicle = new Vehicle;
-        vehicle->initialize(vehParams);
-    }
+    if (!result.errors.empty()) {
+        std::cerr << "engine-sim: " << result.message << std::endl;
 
-    if (transmission == nullptr) {
-        const double gearRatios[] = { 2.97, 2.07, 1.43, 1.00, 0.84, 0.56 };
-        Transmission::Parameters tParams;
-        tParams.GearCount = 6;
-        tParams.GearRatios = gearRatios;
-        tParams.MaxClutchTorque = units::torque(1000.0, units::ft_lb);
-        transmission = new Transmission;
-        transmission->initialize(tParams);
-    }
-
-    loadEngine(engine, vehicle, transmission);
-    refreshUserInterface();
-
-    if (!failureMessage.empty()) {
-        m_infoCluster->setLogMessage(failureMessage);
+        auto lock = m_host->lock();
+        m_infoCluster->setLogMessage(result.message);
     }
 }
 

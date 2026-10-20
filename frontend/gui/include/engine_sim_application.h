@@ -24,7 +24,12 @@
 #include "transmission.h"
 
 #include "delta.h"
+#include "engine_host.h"
 
+#include <cstdint>
+#include <deque>
+#include <memory>
+#include <string>
 #include <vector>
 
 class EngineSimApplication {
@@ -41,7 +46,6 @@ class EngineSimApplication {
         void run();
         void destroy();
 
-        void loadEngine(Engine *engine, Vehicle *vehicle, Transmission *transmission);
         void drawGenerated(
                 const GeometryGenerator::GeometryIndices &indices,
                 int layer = 0);
@@ -88,13 +92,16 @@ class EngineSimApplication {
         ApplicationSettings* getAppSettings() { return &m_applicationSettings; }
 
     protected:
-        void loadScript();
-        bool compileScript(
-            const std::string &scriptPath,
-            const std::string &logPath,
-            Engine **engine,
-            Vehicle **vehicle,
-            Transmission **transmission);
+        // Loads a script through the host; keeps the current engine if it fails
+        void reloadEngine(const std::string &scriptPath = "");
+
+        // Host hooks. All run with the host lock held; the audio, step and frame hooks run on
+        // the simulation thread.
+        void onEngineChanged();
+        void onAudio(const int16_t *samples, int count);
+        void onFrame(const EngineHost::FrameStats &stats);
+        void feedLocalAudio();
+
         void processEngineInput();
         void renderScene();
 
@@ -110,7 +117,7 @@ class EngineSimApplication {
 
     protected:
         virtual void initialize();
-        virtual void process(float dt);
+        virtual void process();
         virtual void render();
 
         float m_displayAngle;
@@ -126,9 +133,8 @@ class EngineSimApplication {
         dbasic::DeltaEngine m_engine;
         dbasic::AssetManager m_assetManager;
 
-        dbasic::Path m_dataRoot;
-        dbasic::Path m_userData;
-        dbasic::Path m_outputPath;
+        // Owns the engine and runs the simulation; the pointers below are views into it
+        std::unique_ptr<EngineHost> m_host;
 
         std::string m_assetPath;
 
@@ -141,8 +147,6 @@ class EngineSimApplication {
 
         std::vector<SimulationObject *> m_objects;
         Engine *m_iceEngine;
-        Vehicle *m_vehicle;
-        Transmission *m_transmission;
         Simulator *m_simulator;
         double m_dynoSpeed;
         double m_torque;
@@ -157,8 +161,6 @@ class EngineSimApplication {
         MixerCluster *m_mixerCluster;
         InfoCluster *m_infoCluster;
         SimulationObject::ViewParameters m_viewParameters;
-
-        bool m_paused;
 
     protected:
         ysVector m_background;
@@ -177,6 +179,9 @@ class EngineSimApplication {
         ysAudioBuffer *m_outputAudioBuffer;
         AudioBuffer m_audioBuffer;
         ysAudioSource *m_audioSource;
+
+        // Samples from the simulation thread waiting for room in the output device
+        std::deque<int16_t> m_localAudio;
 
         int m_oscillatorSampleOffset;
         int m_screen;

@@ -14,6 +14,7 @@
 #include <mutex>
 #include <atomic>
 #include <condition_variable>
+#include <vector>
 
 class Synthesizer {
     public:
@@ -86,7 +87,7 @@ class Synthesizer {
         void setInputSampleRate(double sampleRate);
         double getInputSampleRate() const { return m_inputSampleRate; }
 
-        int16_t renderAudio(int inputOffset);
+        int16_t renderAudio(int inputOffset, const AudioParameters &params);
 
         double getLevelerGain();
         AudioParameters getAudioParameters();
@@ -113,8 +114,11 @@ class Synthesizer {
         std::thread *m_thread;
         std::atomic<bool> m_run;
         bool m_processed;
+        float m_levelerAttenuation = 1.0f;
+        std::vector<int16_t> m_renderScratch;
 
-        std::mutex m_inputLock;
+        // Guards everything shared with the audio rendering thread: the input and output
+        // buffers, m_processed/m_inputSamplesRead, the audio parameters and m_levelerAttenuation
         std::mutex m_lock0;
         std::condition_variable m_cv0;
 

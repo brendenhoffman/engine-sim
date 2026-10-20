@@ -5,6 +5,8 @@
 #include <assert.h>
 
 ysErrorSystem *ysErrorSystem::g_instance = nullptr;
+thread_local int ysErrorSystem::m_stackLevel = 0;
+thread_local const char *ysErrorSystem::m_callStack[MAX_STACK_LEVEL] = {};
 
 ysErrorSystem::ysErrorSystem() {
     if (g_instance != nullptr) {
@@ -13,8 +15,6 @@ ysErrorSystem::ysErrorSystem() {
 
     g_instance = this;
 
-    memset((void *)m_callStack, 0, sizeof(m_callStack));
-    m_stackLevel = 0;
 }
 
 ysErrorSystem::~ysErrorSystem() {
