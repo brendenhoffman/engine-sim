@@ -44,6 +44,36 @@ class Engine : public Part {
             double initialHighFrequencyGain;
             double initialNoise;
             double initialJitter;
+            double initialConvolution = 1.0;
+
+            // The speed this engine is meant to idle at (0: unknown). Tells BeamNG where to
+            // idle a car tuned to this engine; it doesn't control anything in engine-sim.
+            double idleRpm = 0;
+            // In BeamNG, idle freely as on its own (its idle control and fuel cut) rather than
+            // following the game's idle speed: for lumpy big-overlap idles
+            bool idleFreeRunning = false;
+
+            // Crank angle of one engine cycle (see Crankshaft::setCycleLength)
+            double cycleLength = 4 * constants::pi;
+
+            // Performance: fluid substeps per simulation step, and the constraint solver's
+            // iteration cap. Fewer is faster and less stable/accurate.
+            double fluidSimulationSteps = 8;
+            double maxSleSolverSteps = 128;
+
+            // Charge heating: heat flow between the gas and the cylinder walls (W/m^2/K), and
+            // the wall temperature (K)
+            double heatTransferCoefficient = 100.0;
+            double blockTemperature = units::celcius(90.0);
+            // When set, the coefficient above holds at this mean piston speed and scales with
+            // speed^0.8 (as measured heat transfer does): less loss at idle, more at high rpm.
+            // 0 keeps it constant (upstream).
+            double heatTransferReferenceSpeed = 0;
+
+            // Intake runners and exhaust primaries as 1-D pipes with this many cells per metre,
+            // so pressure waves travel in them (0: lumped volumes, upstream)
+            double pipeResolution = 0;
+            bool realGas = false;           // GasSystem::Properties::Real everywhere
         };
 
     public:
@@ -60,6 +90,7 @@ class Engine : public Part {
         virtual double getSpeedControl();
         virtual void setThrottle(double throttle);
         virtual double getThrottle() const;
+        void setIdleControlEnabled(bool enabled); // The throttle's idle air control, if it has one
         virtual double getThrottlePlateAngle() const;
         virtual void calculateDisplacement();
         double getDisplacement() const { return m_displacement; }
@@ -106,6 +137,18 @@ class Engine : public Part {
         double getInitialHighFrequencyGain() const { return m_initialHighFrequencyGain; }
         double getInitialNoise() const { return m_initialNoise; }
         double getInitialJitter() const { return m_initialJitter; }
+        double getInitialConvolution() const { return m_initialConvolution; }
+        double getIdleRpm() const { return m_idleRpm; } // rad/s, 0 if not given
+        bool getIdleFreeRunning() const { return m_idleFreeRunning; }
+        int getFluidSimulationSteps() const { return m_fluidSimulationSteps; }
+        int getMaxSleSolverSteps() const { return m_maxSleSolverSteps; }
+        double getHeatTransferCoefficient() const { return m_heatTransferCoefficient; }
+        double getBlockTemperature() const { return m_blockTemperature; }
+        double getHeatTransferReferenceSpeed() const { return m_heatTransferReferenceSpeed; }
+        double getPipeResolution() const { return m_pipeResolution; }
+        bool getRealGas() const { return m_realGas; }
+        // Turbochargers and superchargers across all intakes
+        int getCompressorStageCount() const;
 
         virtual Simulator *createSimulator(Vehicle *vehicle, Transmission *transmission);
 
@@ -135,6 +178,16 @@ class Engine : public Part {
         double m_initialHighFrequencyGain;
         double m_initialNoise;
         double m_initialJitter;
+        double m_initialConvolution = 1.0;
+        double m_idleRpm = 0;
+        bool m_idleFreeRunning = false;
+        int m_fluidSimulationSteps = 8;
+        int m_maxSleSolverSteps = 128;
+        double m_heatTransferCoefficient = 100.0;
+        double m_blockTemperature = 0;
+        double m_heatTransferReferenceSpeed = 0;
+        double m_pipeResolution = 0;
+        bool m_realGas = false;
 
         ExhaustSystem *m_exhaustSystems;
         int m_exhaustSystemCount;

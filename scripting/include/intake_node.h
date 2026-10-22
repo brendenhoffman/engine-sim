@@ -13,6 +13,16 @@
 
 namespace es_script {
 
+    class ExhaustSystemNode;
+
+    // A forced induction setup, filled in by a forced_induction node and its add_stage actions,
+    // built when the intake is
+    struct ForcedInductionSetup {
+        ForcedInduction::Parameters parameters;
+        std::vector<ForcedInduction::Stage> stages;
+        ExhaustSystemNode *exhaust = nullptr;
+    };
+
     class IntakeNode : public ObjectReferenceNode<IntakeNode> {
     public:
         IntakeNode() { /* void */ }
@@ -23,8 +33,18 @@ namespace es_script {
             Intake::Parameters parameters = m_parameters;
             intake->initialize(parameters);
 
+            if (m_forcedInduction != nullptr && intake->getForcedInduction() == nullptr) {
+                ForcedInduction::Parameters fi = m_forcedInduction->parameters;
+                fi.exhaust = context->getExhaust(m_forcedInduction->exhaust);
+                ForcedInduction *forcedInduction = new ForcedInduction;
+                forcedInduction->initialize(fi, m_forcedInduction->stages, intake->freshMix());
+                intake->setForcedInduction(forcedInduction);
+            }
+
             return intake;
         }
+
+        void setForcedInduction(const ForcedInductionSetup *setup) { m_forcedInduction = setup; }
 
     protected:
         virtual void registerInputs() {
@@ -51,6 +71,7 @@ namespace es_script {
 
         double m_throttleGammaUnused = 0.0; // Deprecated; to be removed in a future release
         Intake::Parameters m_parameters;
+        const ForcedInductionSetup *m_forcedInduction = nullptr;
     };
 
 } /* namespace es_script */

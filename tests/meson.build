@@ -1,6 +1,13 @@
 engine_sim_tests = executable(
   'engine-sim-tests',
   files(
+    'cam_timing_tests.cpp',
+    'pipe_tests.cpp',
+    'real_gas_tests.cpp',
+    'forced_induction_tests.cpp',
+    'rotary_tests.cpp',
+    'engine_generator_tests.cpp',
+    'engine_host_tests.cpp',
     'function_test.cpp',
     'gas_system_tests.cpp',
     'host_settings_tests.cpp',

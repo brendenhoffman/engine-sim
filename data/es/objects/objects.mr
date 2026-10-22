@@ -32,6 +32,8 @@ public node valvetrain_channel => __engine_sim__valvetrain_channel { /* void */ 
 public node vehicle_channel => __engine_sim__vehicle_channel { /* void */ }
 public node transmission_channel => __engine_sim__transmission_channel { /* void */ }
 public node throttle_channel => __engine_sim__throttle_channel { /* void */ }
+public node compressor_stage_channel => __engine_sim__compressor_stage_channel { /* void */ }
+public node forced_induction_channel => __engine_sim__forced_induction_channel { /* void */ }
 
 private node turbulence_to_flame_speed_ratio_default {
     alias output __out:
@@ -61,6 +63,13 @@ public node fuel => __engine_sim__fuel {
     input low_efficiency_attenuation [float]: 0.6;
     input max_turbulence_effect [float]: 2.0;
     input max_dilution_effect [float]: 10.0;
+    // How much leftover exhaust in the charge slows the flame (0: not at all, 1: the full
+    // laminar-flame correlation). Charges too diluted to burn misfire: the lope of big-overlap
+    // engines at idle.
+    input dilution_sensitivity [float]: 0.0;
+    // Firing-to-firing spread of the flame speed, growing with leftover exhaust in the charge
+    // (0: none). With dilution_sensitivity, this makes a diluted idle irregular.
+    input cyclic_variation [float]: 0.0;
     alias output __out [fuel_channel];
 }
 
@@ -90,6 +99,18 @@ private node _engine => __engine_sim__engine {
     input hf_gain [float];
     input jitter [float];
     input noise [float];
+    input convolution [float];
+    input cycle_angle [float];
+    input idle_rpm [float];
+    input idle_free_running [float];
+
+    input fluid_simulation_steps [float];
+    input max_sle_solver_steps [float];
+    input heat_transfer_coefficient [float];
+    input block_temperature [float];
+    input heat_transfer_reference_speed [float];
+    input pipe_resolution [float];
+    input real_gas [float];
 
     alias output __out [engine_channel];
 }
@@ -107,13 +128,58 @@ public node engine {
 
     input fuel: params.fuel;
     input throttle_gamma: 1.0;
+    input idle_speed: 0.0;                  // Idle air control target (0: none)
+    input idle_proportional: 0.6;           // How hard it reacts to the speed dropping
+    input idle_integral: 0.5;               // How fast it builds up to hold the speed
+    input idle_max_opening: 0.3;            // The most it opens the throttle (as a pedal position)
+    input idle_fuel_cut: 1.5;               // Overrun fuel cut above this many times idle_speed (0: none)
     input throttle:
-        direct_throttle_linkage(gamma: throttle_gamma);
+        direct_throttle_linkage(
+            gamma: throttle_gamma,
+            idle_speed: idle_speed,
+            idle_proportional: idle_proportional,
+            idle_integral: idle_integral,
+            idle_max_opening: idle_max_opening,
+            idle_fuel_cut: idle_fuel_cut);
 
     input simulation_frequency: 10000;
     input hf_gain: 0.01;
     input jitter: 0.5;
     input noise: 1.0;
+    input convolution: 1.0;
+
+    // One engine cycle: 720 deg for four-strokes, 360 deg for two-strokes. Camshafts turn
+    // once per cycle, and ignition angles are within it.
+    input cycle_angle: 720 * units.deg;
+
+    // Where this engine is meant to idle (0: work it out). BeamNG cars tuned to this engine
+    // idle here; set it when the engine's closed-throttle idle is lumpy or fussy.
+    input idle_rpm: 0.0;
+    // In BeamNG, idle freely (own idle control and fuel cut) instead of following the game's
+    // idle speed: for lumpy big-overlap idles (1: yes)
+    input idle_free_running: 0;
+
+    // Performance: fewer fluid steps / solver steps run faster but less stably
+    input fluid_simulation_steps: 8;
+    input max_sle_solver_steps: 128;
+
+    // Charge heating: gas-to-wall heat transfer (W/m^2/K) and wall temperature
+    input heat_transfer_coefficient: 100.0;
+    input block_temperature: 90.0 * units.C + units.K0;
+    // When set, heat_transfer_coefficient holds at this mean piston speed and scales with
+    // speed^0.8, as real heat loss does (0: constant, upstream)
+    input heat_transfer_reference_speed: 0.0;
+
+    // Intake runners and exhaust primaries as 1-D pipes with this many cells per metre, so
+    // pressure waves travel in them: ram tuning, scavenging and reversion by the physics.
+    // 0 keeps upstream's lumped volumes. 30-60 is plenty.
+    input pipe_resolution: 0.0;
+
+    // Real gas heat capacities: hot and burned gas take more heat per degree than cold air,
+    // so combustion peaks lower and the engine is as efficient as a real one rather than an
+    // ideal air cycle (1: yes). Needs about 25% more max_burning_efficiency than upstream's
+    // gas for the same power (0: upstream's gas, gamma 1.4 throughout).
+    input real_gas: 0;
 
     alias output __out [_engine]:
         _engine(
@@ -132,12 +198,31 @@ public node engine {
             simulation_frequency: simulation_frequency,
             hf_gain: hf_gain,
             jitter: jitter,
-            noise: noise
+            noise: noise,
+            convolution: convolution,
+            cycle_angle: cycle_angle,
+            idle_rpm: idle_rpm,
+            idle_free_running: idle_free_running,
+
+            fluid_simulation_steps: fluid_simulation_steps,
+            max_sle_solver_steps: max_sle_solver_steps,
+            heat_transfer_coefficient: heat_transfer_coefficient,
+            block_temperature: block_temperature,
+            heat_transfer_reference_speed: heat_transfer_reference_speed,
+            pipe_resolution: pipe_resolution,
+            real_gas: real_gas
         );
 }
 
+// The pedal works the throttle directly. With idle_speed set, an idle air controller holds that
+// speed when the pedal is up (opening the throttle up to idle_max_opening, as a pedal position).
 public node direct_throttle_linkage => __engine_sim__direct_throttle_linkage {
     input gamma [float]: 1.0;
+    input idle_speed [float]: 0.0;
+    input idle_max_opening [float]: 0.3;
+    input idle_proportional [float]: 0.6;
+    input idle_integral [float]: 0.5;
+    input idle_fuel_cut [float]: 1.5;
     alias output __out [throttle_channel];
 }
 
@@ -293,6 +378,12 @@ private node _cylinder_bank => __engine_sim__cylinder_bank {
     input position_x [float]: 0.0;
     input position_y [float]: 0.0;
     input display_depth [float]: 0.6;
+    input rotor_radius [float]: 0.0;
+    input rotor_eccentricity [float]: 0.0;
+    input rotor_width [float]: 0.0;
+    input rotor_phase [float]: 0.0;
+    input spark_plugs [float]: 1;
+    input trailing_delay [float]: 0.0;
     alias output __out [cylinder_bank_channel];
 }
 
@@ -312,6 +403,37 @@ public node cylinder_bank {
             position_x: position_x,
             position_y: position_y,
             display_depth: display_depth
+        );
+}
+
+// Wankel rotor housing: a "bank" whose three cylinders are the rotor's faces (add them with
+// add_face). Set the engine's cycle_angle to 1080 deg: a face's full cycle takes three turns
+// of the eccentric shaft. Face 0 is at compression TDC at cycle angle `phase`, and each next
+// face 360 deg later, so ignition and port lobes for face k go at phase + k * 360 deg.
+public node rotor_housing {
+    input generating_radius;              // R, rotor centre to apex
+    input eccentricity;                   // e, eccentric shaft throw
+    input width;                          // B, rotor width
+    input phase: 0.0;
+    input spark_plugs: 2;                 // Per face (leading and trailing)
+    input trailing_delay: 0.0;            // Shaft degrees the trailing plug fires after the leading one
+    input angle: 0.0;
+    input position_x: 0.0;
+    input position_y: 0.0;
+    alias output __out [_cylinder_bank]:
+        _cylinder_bank(
+            angle: angle,
+            bore: width,
+            deck_height: generating_radius,
+            position_x: position_x,
+            position_y: position_y,
+            display_depth: 0.5,
+            rotor_radius: generating_radius,
+            rotor_eccentricity: eccentricity,
+            rotor_width: width,
+            rotor_phase: phase,
+            spark_plugs: spark_plugs,
+            trailing_delay: trailing_delay
         );
 }
 
@@ -614,4 +736,150 @@ public node vehicle => __engine_sim__vehicle {
 public node transmission => __engine_sim__transmission {
     input max_clutch_torque [float]: 1000 * units.lb_ft;
     alias output __out [transmission_channel];
+}
+
+// Forced induction
+
+// One compressor stage: a turbocharger or a supercharger (use those)
+public node compressor_stage => __engine_sim__compressor_stage {
+    input turbo [float]: 1.0;
+    input compressor_radius [float]: 25.0 * units.mm;      // Impeller tip
+    input compressor_flow [float]: 0.25 * units.kg / units.sec; // Choke flow at max speed
+    input compressor_efficiency [float]: 0.72;
+    input slip [float]: 0.9;                               // Work factor: how much of tip speed^2 it gives the air
+    input duct_length [float]: 0.5 * units.m;              // Ducting before and after: the air's inertia
+    input duct_area [float]: 20.0 * units.cm2;
+    input turbine_radius [float]: 25.0 * units.mm;
+    input turbine_flow [float]: 0.0;
+    input turbine_efficiency [float]: 0.7;
+    input inertia [float]: 0.00003;                        // Shaft, kg m^2
+    input max_speed [float]: 200000.0 * units.rpm;
+    input friction [float]: 0.000002;                      // Bearings, N m per rad/s
+    input drive_ratio [float]: 0.0;                        // Supercharger: impeller / crank speed
+    input sequential_rpm [float]: 0.0;                     // Sequential twin: comes in above this engine speed
+    input prespool [float]: 0.1;                           // ...its turbine's share of the exhaust until then
+    input whine_order [float]: 4.0;                        // Whine pitch in multiples of shaft speed
+    input gear_order [float]: 0.0;                         // Supercharger drive gear whine, multiples of crank speed (0: none)
+    input gear_volume [float]: 0.5;
+    input displacement [float]: 0.0;                       // Positive displacement blower: air per rotor turn (0: centrifugal)
+    input leakage [float]: 0.0;                            // ...and the area it leaks back through
+    alias output __out [compressor_stage_channel];
+}
+
+// A turbocharger: compressor and turbine on one shaft, spun by the exhaust
+public node turbocharger {
+    input compressor_radius: 25.0 * units.mm;
+    input compressor_flow: 0.25 * units.kg / units.sec;
+    input compressor_efficiency: 0.72;
+    input slip: 0.9;
+    input duct_length: 0.5 * units.m;
+    input duct_area: 20.0 * units.cm2;
+    input turbine_radius: 25.0 * units.mm;
+    input turbine_flow: k_carb(300.0);
+    input turbine_efficiency: 0.7;
+    input inertia: 0.00003;
+    input max_speed: 200000.0 * units.rpm;
+    input friction: 0.000002;
+    input sequential_rpm: 0.0;
+    input prespool: 0.1;
+    input whine_order: 4.0;
+    alias output __out [compressor_stage]:
+        compressor_stage(
+            turbo: 1.0,
+            compressor_radius: compressor_radius,
+            compressor_flow: compressor_flow,
+            compressor_efficiency: compressor_efficiency,
+            slip: slip,
+            duct_length: duct_length,
+            duct_area: duct_area,
+            turbine_radius: turbine_radius,
+            turbine_flow: turbine_flow,
+            turbine_efficiency: turbine_efficiency,
+            inertia: inertia,
+            max_speed: max_speed,
+            friction: friction,
+            sequential_rpm: sequential_rpm,
+            prespool: prespool,
+            whine_order: whine_order
+        );
+}
+
+// A centrifugal supercharger geared to the crankshaft
+public node supercharger {
+    input compressor_radius: 30.0 * units.mm;
+    input compressor_flow: 0.25 * units.kg / units.sec;
+    input compressor_efficiency: 0.72;
+    input slip: 0.9;
+    input duct_length: 0.5 * units.m;
+    input duct_area: 20.0 * units.cm2;
+    input drive_ratio: 5.0;
+    input max_speed: 100000.0 * units.rpm;
+    input friction: 0.000002;
+    input whine_order: 1.0;
+    input gear_order: 0.0;
+    input gear_volume: 0.5;
+    alias output __out [compressor_stage]:
+        compressor_stage(
+            turbo: 0.0,
+            gear_order: gear_order,
+            gear_volume: gear_volume,
+            compressor_radius: compressor_radius,
+            compressor_flow: compressor_flow,
+            compressor_efficiency: compressor_efficiency,
+            slip: slip,
+            duct_length: duct_length,
+            duct_area: duct_area,
+            drive_ratio: drive_ratio,
+            max_speed: max_speed,
+            friction: friction,
+            whine_order: whine_order
+        );
+}
+
+// A positive-displacement blower (Roots, twin-screw, Eaton TVS) belted to the crank. Its whine
+// comes at the rate its rotor lobes pass: lobes x rotors per rotor turn.
+public node roots_supercharger {
+    input displacement: 2.65 * units.L;
+    input leakage: 1.5 * units.cm2;
+    input efficiency: 0.7;                   // Adiabatic
+    input drive_ratio: 2.0;
+    input max_speed: 16000.0 * units.rpm;
+    input friction: 0.0002;
+    input lobes: 8.0;                        // 4 lobes x 2 rotors
+    input gear_order: 0.0;
+    input gear_volume: 0.3;
+    alias output __out [compressor_stage]:
+        compressor_stage(
+            turbo: 0.0,
+            displacement: displacement,
+            leakage: leakage,
+            compressor_efficiency: efficiency,
+            drive_ratio: drive_ratio,
+            max_speed: max_speed,
+            friction: friction,
+            whine_order: lobes,
+            gear_order: gear_order,
+            gear_volume: gear_volume
+        );
+}
+
+// The charge path from the compressors (add them with add_stage) to an intake's throttle, and
+// the exhaust system that feeds any turbines. Pressures are above ambient.
+public node forced_induction => __engine_sim__forced_induction {
+    input intake [intake];
+    input exhaust_system [exhaust_system];
+    input charge_volume [float]: 4.0 * units.L;            // Pipes and intercooler
+    input intercooler [float]: 0.0;                        // Effectiveness (0: none, 0.8: a good one)
+    input boost [float]: 0.0;                              // Wastegate opens past this (0: no wastegate)
+    input wastegate_flow [float]: 0.0;
+    input wastegate_range [float]: 40.0 * units.kPa;       // From cracking to fully open (narrower hunts)
+    input bov_flow [float]: 0.0;                           // Blow-off valve (0: none)
+    input bov_pressure [float]: 20.0 * units.kPa;          // Charge over manifold pressure that opens it
+    input bov_vent [float]: 1.0;                           // 1: vents to the air (pssh), 0: recirculates
+    input whine_volume [float]: 1.0;
+    input hiss_volume [float]: 1.0;
+    input bov_volume [float]: 1.0;
+    input flutter_volume [float]: 1.0;
+    input wastegate_volume [float]: 0.0;                   // Open dump / screamer pipe
+    alias output __out [forced_induction_channel];
 }

@@ -1,6 +1,9 @@
 #include "control_server.h"
+#include "forced_induction.h"
+#include "intake.h"
 
 #include "engine.h"
+#include "engine_generator.h"
 #include "engine_host.h"
 #include "ignition_module.h"
 #include "simulator.h"
@@ -133,6 +136,8 @@ void ControlServer::serverThread() {
         waitFor.push_back({ m_listenSocket, POLLIN, 0 });
         for (const Client &client : clients) waitFor.push_back({ client.fd, POLLIN, 0 });
 
+        maybeAutoGenerate();
+
         // Wake up regularly so stop() doesn't hang
         if (poll(waitFor.data(), waitFor.size(), 100) <= 0) continue;
 
@@ -192,6 +197,8 @@ json ControlServer::handle(const json &request) {
     if (cmd == "load") return load(request);
     if (cmd == "control") return control(request);
     if (cmd == "synth") return synth(request);
+    if (cmd == "idle_air") return idleAir(request);
+    if (cmd == "generate") return generate();
     if (cmd == "shutdown") {
         if (!m_shutdownHandler) return failure("shutdown isn't supported here");
         m_shutdownHandler();
@@ -225,6 +232,20 @@ json ControlServer::status() {
                 { "starter", simulator->m_starterMotor.m_enabled },
                 { "simulation_frequency", simulator->getSimulationFrequency() },
             };
+            if (engine->getIntakeCount() > 0) {
+                const Intake *intake = engine->getIntake(0);
+                reply["engine"]["idle_air"] = (1 - intake->getIdleThrottlePlatePosition()) * 100;
+                reply["engine"]["idle_air_default"] = (1 - intake->getDefaultIdleThrottlePlatePosition()) * 100;
+            }
+            // Manifold pressure above ambient (negative: vacuum), and any turbos' speeds
+            reply["engine"]["manifold_kpa"] = (engine->getManifoldPressure() - units::pressure(1.0, units::atm)) / 1000.0;
+            json shafts = json::array();
+            for (int i = 0; i < engine->getIntakeCount(); ++i) {
+                if (const ForcedInduction *fi = engine->getIntake(i)->getForcedInduction()) {
+                    for (int j = 0; j < fi->stageCount(); ++j) shafts.push_back(units::toRpm(fi->state(j).speed) / 1000.0);
+                }
+            }
+            if (!shafts.empty()) reply["engine"]["compressor_krpm"] = shafts;
         }
         else {
             reply["engine"] = nullptr;
@@ -259,6 +280,8 @@ json ControlServer::status() {
             reply["beamng_vehicle"] = std::move(vehicle);
         }
     }
+
+    reply["last_build"] = { { "id", m_buildId }, { "ok", m_buildOk }, { "message", m_buildMessage } };
 
     reply["performance"] = {
         { "steps_per_second", m_host->stepsPerSecond() },
@@ -309,6 +332,10 @@ json ControlServer::load(const json &request) {
         return failure("no such file: " + script);
     }
 
+    return loadAndRemember(script);
+}
+
+json ControlServer::loadAndRemember(const std::string &script) {
     // The owner thread swaps engines (the GUI rebuilds its view of the engine at the same time)
     auto promise = std::make_shared<std::promise<EngineHost::LoadResult>>();
     std::future<EngineHost::LoadResult> future = promise->get_future();
@@ -361,6 +388,26 @@ json ControlServer::control(const json &request) {
     return { { "ok", true } };
 }
 
+// Idle air, percent past the closed throttle (the idle screw), on all intakes
+json ControlServer::idleAir(const json &request) {
+    const bool reset = request.value("reset", false);
+    double percent = 0;
+    if (!reset) {
+        if (!request.contains("percent") || !request["percent"].is_number()) return failure("idle_air needs \"percent\" or \"reset\"");
+        percent = request["percent"].get<double>();
+        if (percent < 0 || percent > 50) return failure("idle air must be between 0 and 50 percent");
+    }
+
+    auto lock = m_host->lock();
+    Engine *engine = m_host->engine();
+    if (engine == nullptr) return failure("no engine loaded");
+    for (int i = 0; i < engine->getIntakeCount(); ++i) {
+        Intake *intake = engine->getIntake(i);
+        intake->setIdleThrottlePlatePosition(reset ? intake->getDefaultIdleThrottlePlatePosition() : 1 - percent / 100);
+    }
+    return { { "ok", true } };
+}
+
 json ControlServer::synth(const json &request) {
     // The keys the engine-sim window's Z/X/C/V/B + scroll controls change, all 0 to 1
     static const struct { const char *key; float Synthesizer::AudioParameters::*field; } fields[] = {
@@ -392,6 +439,7 @@ json ControlServer::synth(const json &request) {
         audio.inputSampleNoise = static_cast<float>(engine->getInitialJitter());
         audio.airNoise = static_cast<float>(engine->getInitialNoise());
         audio.dF_F_mix = static_cast<float>(engine->getInitialHighFrequencyGain());
+        audio.convolution = static_cast<float>(engine->getInitialConvolution());
     }
     for (const auto &f : fields) {
         if (request.contains(f.key)) audio.*(f.field) = static_cast<float>(request[f.key].get<double>());
@@ -399,6 +447,70 @@ json ControlServer::synth(const json &request) {
     simulator->synthesizer().setAudioParameters(audio);
 
     return { { "ok", true } };
+}
+
+json ControlServer::generate() {
+    json reply = buildEngine();
+    m_buildId += 1;
+    m_buildOk = reply.value("ok", false);
+    m_buildMessage = reply.value(m_buildOk ? "message" : "error", std::string());
+    return reply;
+}
+
+json ControlServer::buildEngine() {
+    BridgeTransport *transport = m_host->bridgeTransport();
+    if (transport == nullptr) return failure("the BeamNG bridge isn't running");
+
+    json vehicle;
+    double age = 0;
+    if (!transport->vehicleInfo(&vehicle, &age)) return failure("BeamNG hasn't described a car yet; get in one first");
+
+    EngineSpec spec;
+    std::string error;
+    if (!EngineSpec::fromVehicleInfo(vehicle, &spec, &error)) return failure(error);
+
+    const std::string path = saveGeneratedEngine(m_host->paths().userData, vehicle, generateEngineScript(spec), &error);
+    if (path.empty()) return failure(error);
+
+    json reply = loadAndRemember(path);
+    if (reply.value("ok", false)) {
+        char summary[160];
+        std::snprintf(summary, sizeof(summary), "Built %s: %.1f mm bore, %.1f mm stroke, %.0f rpm limit",
+            spec.name.c_str(), spec.bore * 1000, spec.stroke * 1000, spec.revLimitRpm);
+        std::string message = summary;
+        for (const std::string &note : spec.notes) message += "\n- " + note;
+        reply["message"] = message;
+        reply["script"] = path;
+    }
+    return reply;
+}
+
+// With auto_engine on, a new car (or a new engine in it) gets a matching engine built
+void ControlServer::maybeAutoGenerate() {
+    {
+        std::lock_guard<std::mutex> lock(m_settingsMutex);
+        if (!m_settings.bridge.autoEngine) {
+            m_lastAutoCar.clear(); // Turning it on builds for the current car straight away
+            return;
+        }
+    }
+
+    BridgeTransport *transport = m_host->bridgeTransport();
+    json vehicle;
+    double age = 0;
+    if (transport == nullptr || !transport->vehicleInfo(&vehicle, &age) || age > 10) return;
+
+    const json car = vehicle.value("vehicle", json::object());
+    const json engine = vehicle.value("engine", json());
+    const std::string key = car.value("directory", std::string()) + "|" + car.value("configuration", std::string())
+        + "|" + (engine.is_object() ? engine.value("part", std::string()) : std::string("none"));
+    if (key == m_lastAutoCar) return;
+    m_lastAutoCar = key;
+
+    if (!engine.is_object()) return; // Electric: nothing to build
+    const json result = generate();
+    std::fprintf(stderr, "engine-sim: automatic engine: %s\n",
+        result.value("message", result.value("error", std::string("?"))).c_str());
 }
 
 void ControlServer::saveSettings() {

@@ -2,6 +2,7 @@
 // Audio goes to listeners (a WAV file for now; the BeamNG bridge later).
 
 #include "control_server.h"
+#include "engine_generator.h"
 #include "engine_host.h"
 #include "host_settings.h"
 
@@ -21,6 +22,7 @@
 #include <iostream>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace {
     std::atomic<bool> g_quit{false};
@@ -35,6 +37,8 @@ namespace {
         bool start = false;
         bool quiet = false;
         bool bridge = true;
+        bool dyno = false;
+        std::string generateFrom;
     };
 
     void printUsage(const char *argv0) {
@@ -50,6 +54,9 @@ namespace {
             "  --wav PATH        Record the engine audio to a WAV file\n"
             "  --no-bridge       Don't listen for BeamNG on 127.0.0.1:4570\n"
             "  --quiet           Don't print status once a second\n"
+            "  --generate FILE   Build an engine from a BeamNG car description (JSON, or the last\n"
+            "                    engine in a beamng-vehicles.jsonl) and load it\n"
+            "  --dyno            Measure the full-throttle torque curve, print it, and exit\n"
             "  --help            Show this help\n",
             argv0);
     }
@@ -69,6 +76,8 @@ namespace {
             else if (arg == "--start") options->start = true;
             else if (arg == "--quiet") options->quiet = true;
             else if (arg == "--no-bridge") options->bridge = false;
+            else if (arg == "--dyno") options->dyno = true;
+            else if (arg == "--generate") { const char *v = value("--generate"); if (!v) return false; options->generateFrom = v; }
             else if (arg == "--script") { const char *v = value("--script"); if (!v) return false; options->script = v; }
             else if (arg == "--wav") { const char *v = value("--wav"); if (!v) return false; options->wavPath = v; }
             else if (arg == "--throttle") { const char *v = value("--throttle"); if (!v) return false; options->throttle = std::atof(v); }
@@ -127,6 +136,81 @@ namespace {
     };
 }
 
+// BeamNG's torque at an rpm, interpolated from the car's table (0 if there's none)
+double beamTorqueAt(const nlohmann::json &vehicle, double rpm) {
+    if (!vehicle.is_object() || !vehicle.contains("engine") || !vehicle["engine"].is_object()) return 0;
+    const nlohmann::json table = vehicle["engine"].value("torque", nlohmann::json::array());
+    double lastRpm = 0, lastTorque = 0;
+    for (const nlohmann::json &row : table) {
+        if (!row.is_array() || row.size() < 2 || !row[0].is_number() || !row[1].is_number()) continue;
+        const double r = row[0].get<double>(), t = row[1].get<double>();
+        if (r >= rpm) return r == lastRpm ? t : lastTorque + (t - lastTorque) * (rpm - lastRpm) / (r - lastRpm);
+        lastRpm = r;
+        lastTorque = t;
+    }
+    return lastTorque;
+}
+
+// Holds the engine at a series of speeds at full throttle and reads the dyno torque, like a
+// chassis dyno pull done in steps. Prints a table; with a car description, BeamNG's torque too.
+int runDyno(EngineHost &host, const nlohmann::json &vehicle) {
+    double idle, limit;
+    {
+        auto lock = host.lock();
+        Engine *engine = host.engine();
+        Simulator *simulator = host.simulator();
+        limit = units::toRpm(engine->getIgnitionModule()->getRevLimit());
+        idle = 1000;
+        engine->getIgnitionModule()->m_enabled = true;
+        engine->setSpeedControl(1.0);
+        simulator->m_starterMotor.m_enabled = false;
+        simulator->m_dyno.m_enabled = true;
+        simulator->m_dyno.m_hold = true;
+        // Turn the engine its own way (the starter's direction), as the BeamNG bridge does
+        simulator->m_dyno.m_forwardSign = (simulator->m_starterMotor.m_rotationSpeed > 0) ? 1.0 : -1.0;
+        simulator->getTransmission()->changeGear(-1);
+        simulator->getTransmission()->setClutchPressure(0.0);
+    }
+
+    const int points = 14;
+    const bool compare = beamTorqueAt(vehicle, limit) > 0 || beamTorqueAt(vehicle, limit / 2) > 0;
+    std::printf("%8s %10s %10s%s\n", "rpm", "torque Nm", "power kW", compare ? "   BeamNG Nm" : "");
+
+    double peakTorque = 0, peakTorqueRpm = 0, peakPower = 0, peakPowerRpm = 0;
+    for (int i = 0; i < points && !g_quit; ++i) {
+        const double rpm = idle + (limit * 0.98 - idle) * i / (points - 1);
+        {
+            auto lock = host.lock();
+            host.simulator()->m_dyno.m_rotationSpeed = units::rpm(rpm);
+        }
+
+        // Settle, then average the filtered dyno torque
+        std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+        double sum = 0;
+        const int samples = 10;
+        for (int k = 0; k < samples; ++k) {
+            {
+                auto lock = host.lock();
+                sum += units::convert(host.simulator()->getFilteredDynoTorque(), units::Nm);
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+
+        const double torque = sum / samples;
+        const double power = torque * rpm * 2 * 3.14159265358979 / 60 / 1000;
+        if (torque > peakTorque) { peakTorque = torque; peakTorqueRpm = rpm; }
+        if (power > peakPower) { peakPower = power; peakPowerRpm = rpm; }
+
+        if (compare) std::printf("%8.0f %10.1f %10.1f %12.1f\n", rpm, torque, power, beamTorqueAt(vehicle, rpm));
+        else std::printf("%8.0f %10.1f %10.1f\n", rpm, torque, power);
+        std::fflush(stdout);
+    }
+
+    std::printf("peak %.0f Nm at %.0f rpm, %.0f kW (%.0f hp) at %.0f rpm\n",
+        peakTorque, peakTorqueRpm, peakPower, peakPower * 1.341, peakPowerRpm);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     Options options;
     if (!parseOptions(argc, argv, &options)) {
@@ -145,6 +229,42 @@ int main(int argc, char **argv) {
     if (!settingsError.empty()) std::cerr << "engine-sim: " << settingsError << std::endl;
 
     EngineHost host(paths);
+
+    // --generate: build an engine from a car description, then load that
+    nlohmann::json generatedFor;
+    if (!options.generateFrom.empty()) {
+        std::ifstream file(options.generateFrom);
+        std::string line, last;
+        std::vector<std::string> lines;
+        for (std::string l; std::getline(file, l);) if (!l.empty()) lines.push_back(l);
+
+        // A single JSON object, or JSON lines: the last one that has an engine
+        nlohmann::json whole = nlohmann::json::parse(std::ifstream(options.generateFrom), nullptr, false);
+        if (whole.is_object()) generatedFor = whole;
+        for (auto it = lines.rbegin(); generatedFor.is_null() && it != lines.rend(); ++it) {
+            nlohmann::json candidate = nlohmann::json::parse(*it, nullptr, false);
+            if (candidate.is_object() && candidate.contains("engine") && candidate["engine"].is_object()) generatedFor = candidate;
+        }
+
+        EngineSpec spec;
+        std::string error;
+        if (generatedFor.is_null() || !EngineSpec::fromVehicleInfo(generatedFor, &spec, &error)) {
+            std::cerr << "engine-sim: can't generate from " << options.generateFrom << ": "
+                      << (error.empty() ? "no car description with an engine" : error) << std::endl;
+            return 1;
+        }
+
+        const std::string path = saveGeneratedEngine(paths.userData, generatedFor, generateEngineScript(spec), &error);
+        if (path.empty()) {
+            std::cerr << "engine-sim: " << error << std::endl;
+            return 1;
+        }
+
+        std::fprintf(stderr, "engine-sim: generated %s: %s, %.2f L, bore %.1f mm, stroke %.1f mm, limit %.0f rpm\n",
+            path.c_str(), spec.layoutName().c_str(), spec.displacementLitres, spec.bore * 1000, spec.stroke * 1000, spec.revLimitRpm);
+        for (const std::string &note : spec.notes) std::fprintf(stderr, "  - %s\n", note.c_str());
+        options.script = path;
+    }
 
     const EngineHost::LoadResult load = host.loadScript(options.script.empty() ? settings.script : options.script);
     if (!load.errors.empty()) {
@@ -209,6 +329,13 @@ int main(int argc, char **argv) {
     }
 
     host.start();
+
+    if (options.dyno) {
+        const int status = runDyno(host, generatedFor);
+        control.stop();
+        host.stop();
+        return status;
+    }
 
     using clock = std::chrono::steady_clock;
     const auto startTime = clock::now();

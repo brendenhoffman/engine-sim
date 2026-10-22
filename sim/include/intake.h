@@ -5,6 +5,8 @@
 
 #include "gas_system.h"
 
+class ForcedInduction;
+
 class Intake : public Part {
     public:
         struct Parameters {
@@ -45,11 +47,26 @@ class Intake : public Part {
 
         void process(double dt);
 
+        // The fuel-air mixture the carburettor makes
+        GasSystem::Mix freshMix() const;
+
         inline double getRunnerFlowRate() const { return m_runnerFlowRate; }
         inline double getThrottlePlatePosition() const { return m_idleThrottlePlatePosition * m_throttle; }
+
+        // Idle air: how far the plate closes at zero throttle (1 seals it). Adjustable live, like
+        // an idle screw; the engine's own setting is kept for resetting.
+        inline double getIdleThrottlePlatePosition() const { return m_idleThrottlePlatePosition; }
+        inline void setIdleThrottlePlatePosition(double position) { m_idleThrottlePlatePosition = position; }
+        inline double getDefaultIdleThrottlePlatePosition() const { return m_defaultIdleThrottlePlatePosition; }
         inline double getRunnerLength() const { return m_runnerLength; }
         inline double getPlenumCrossSectionArea() const { return m_crossSectionArea; }
         inline double getVelocityDecay() const { return m_velocityDecay; }
+
+        void setGasProperties(const GasSystem::Properties *properties);
+
+        // Turbochargers or superchargers feeding the throttle (owned; null: none)
+        void setForcedInduction(ForcedInduction *forcedInduction);
+        ForcedInduction *getForcedInduction() const { return m_forcedInduction; }
 
         GasSystem m_system;
         double m_throttle;
@@ -65,10 +82,12 @@ class Intake : public Part {
         double m_runnerFlowRate;
         double m_molecularAfr;
         double m_idleThrottlePlatePosition;
+        double m_defaultIdleThrottlePlatePosition = 0;
         double m_runnerLength;
         double m_velocityDecay;
 
         GasSystem m_atmosphere;
+        ForcedInduction *m_forcedInduction = nullptr;
 };
 
 #endif /* ATG_ENGINE_SIM_INTAKE_H */

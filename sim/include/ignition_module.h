@@ -40,6 +40,7 @@ class IgnitionModule : public Part {
         double getTimingAdvance();
 
         bool m_enabled;
+        bool m_fuelCut = false; // Set by the throttle's idle control on a closed-throttle overrun
 
         double getRevLimit() const { return m_revLimit; }
 

@@ -8,6 +8,10 @@
 #include "cylinder_head.h"
 #include "units.h"
 #include "fuel.h"
+#include "pipe.h"
+
+#include <random>
+#include <vector>
 
 class Engine;
 class CombustionChamber : public atg_scs::ForceGenerator {
@@ -21,6 +25,10 @@ class CombustionChamber : public atg_scs::ForceGenerator {
             double StartingPressure;
             double StartingTemperature;
             double CrankcasePressure;
+            double HeatTransferCoefficient = 100.0;              // W/m^2/K
+            double BlockTemperature = units::celcius(90.0);
+            double HeatTransferReferenceSpeed = 0;               // See Engine::Parameters
+            double PipeResolution = 0;                           // See Engine::Parameters
         };
 
         struct FlameEvent {
@@ -34,7 +42,21 @@ class CombustionChamber : public atg_scs::ForceGenerator {
             double travel_x = 0.0;
             double travel_y = 0.0;
             GasSystem::Mix globalMix;
+
+            // Burned gas left in (or pulled back into) the charge, as a molar fraction:
+            // fresh charge has inert gas and oxygen in air's 3:1 ratio, products add inert
+            double residualFraction = 0.0;
+
+            // Rotor faces: where the leading plug fired (cycle angle), for the trailing ones
+            double ignitionAngle = 0.0;
+            double undilutedFlameSpeed = 0.0; // Before residual gas and cyclic variation
+            double equivalenceRatio = 0.0;
         };
+
+        // How the last charge went, for diagnostics: how much of it the flame reached
+        // before the next ignition (or the exhaust took it)
+        double lastBurnCompletion() const { return m_lastBurnCompletion; }
+        int misfires() const { return m_misfires; }
 
         struct FrictionModelParams {
             double frictionCoeff = 0.06;
@@ -62,6 +84,11 @@ class CombustionChamber : public atg_scs::ForceGenerator {
         double calculateFiringPressure() const;
 
         bool isLit() const { return m_lit; }
+
+        // A Wankel rotor face rather than a cylinder: its volume follows the eccentric shaft
+        // and it pushes the shaft directly
+        bool isRotorFace() const { return m_rotorFace; }
+        double rotorVolumeDerivative() const; // dV per radian of cycle angle
         bool popLitLastFrame();
 
         void ignite();
@@ -80,6 +107,35 @@ class CombustionChamber : public atg_scs::ForceGenerator {
 
         Function *m_meanPistonSpeedToTurbulence;
         GasSystem m_system;
+        // The signal the exhaust contributes to the sound: pressure above ambient where the
+        // primary meets the collector, plus a little of its flow
+        double exhaustSoundSignal() const;
+        // How far that signal still has to travel to the tailpipe
+        double exhaustSoundPathLength() const;
+        // The gas in the intake runner next to the port
+        GasSystem::Mix intakeRunnerMix() const;
+        bool hasPipes() const { return m_intakePipeRef != nullptr; }
+        // The gas model for the chamber, its runners and the pipes it owns
+        void setGasProperties(const GasSystem::Properties *properties) {
+            m_system.setProperties(properties);
+            m_intakeRunnerAndManifold.setProperties(properties);
+            m_exhaustRunnerAndPrimary.setProperties(properties);
+            if (m_pipeOwner) {
+                m_intakePipe.setProperties(properties);
+                m_exhaustPipe.setProperties(properties);
+            }
+        }
+
+        Pipe m_intakePipe;   // Plenum to intake valve, when the engine uses pipes
+        Pipe m_exhaustPipe;  // Exhaust valve to collector
+        // The pipes this chamber breathes through: its own, or for a rotor's second and third
+        // faces, the first face's (one port and runner per housing, which the faces pass in turn)
+        Pipe *m_intakePipeRef = nullptr;
+        Pipe *m_exhaustPipeRef = nullptr;
+        int m_intakePortConnection = 0;
+        int m_exhaustPortConnection = 0;
+        bool m_pipeOwner = false;
+
         GasSystem m_intakeRunnerAndManifold;
         GasSystem m_exhaustRunnerAndPrimary;
         FlameEvent m_flameEvent;
@@ -107,12 +163,23 @@ class CombustionChamber : public atg_scs::ForceGenerator {
         double m_exhaustFlow;
 
         double m_crankcasePressure;
+        bool m_rotorFace = false;
+        double m_lastBurnCompletion = 0;
+        int m_misfires = 0;
+        double m_heatTransferCoefficient = 100.0;
+        double m_blockTemperature = units::celcius(90.0);
+        double m_heatTransferReferenceSpeed = 0;
+        double m_pistonSpeedSum = 0; // Running sum of m_pistonSpeed[], for the mean
 
         double *m_pressure;
         double *m_pistonSpeed;
         static constexpr int StateSamples = 256;
 
         bool m_litLastFrame;
+
+        // Its own generator: the shared rand() is also used by the audio thread, which made
+        // runs unrepeatable
+        std::minstd_rand m_random;
 
         Piston *m_piston;
         CylinderHead *m_head;

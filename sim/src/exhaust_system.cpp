@@ -63,6 +63,12 @@ void ExhaustSystem::process(double dt) {
     airMix.p_inert = 1.0;
     airMix.p_o2 = 0.0;
 
+    if (m_outletExternal) {
+        m_system.dissipateExcessVelocity();
+        m_system.updateVelocity(dt, m_velocityDecay);
+        return;
+    }
+
     m_atmosphere.reset(units::pressure(1.0, units::atm), units::celcius(25.0), airMix);
     GasSystem::FlowParameters flowParams;
     flowParams.crossSectionArea_0 = m_collectorCrossSectionArea;

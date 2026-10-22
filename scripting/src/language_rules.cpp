@@ -74,6 +74,10 @@ void es_script::LanguageRules::registerBuiltinNodeTypes() {
         "__engine_sim__transmission_channel", &es_script::ObjectChannel::TransmissionChannel);
     registerBuiltinType<piranha::ChannelNode>(
         "__engine_sim__throttle_channel", &es_script::ObjectChannel::ThrottleChannel);
+    registerBuiltinType<piranha::ChannelNode>(
+        "__engine_sim__compressor_stage_channel", &es_script::ObjectChannel::CompressorStageChannel);
+    registerBuiltinType<piranha::ChannelNode>(
+        "__engine_sim__forced_induction_channel", &es_script::ObjectChannel::ForcedInductionChannel);
 
     // Literals
     registerBuiltinType<piranha::DefaultLiteralFloatNode>(
@@ -135,13 +139,18 @@ void es_script::LanguageRules::registerBuiltinNodeTypes() {
     registerBuiltinType<AddCrankshaftNode>("__engine_sim__add_crankshaft");
     registerBuiltinType<AddCylinderBankNode>("__engine_sim__add_cylinder_bank");
     registerBuiltinType<AddCylinderNode>("__engine_sim__add_cylinder");
+    registerBuiltinType<AddRotorFaceNode>("__engine_sim__add_rotor_face");
     registerBuiltinType<AddSampleNode>("__engine_sim__add_sample");
+    registerBuiltinType<AddStageNode>("__engine_sim__add_stage");
     registerBuiltinType<AddLobeNode>("__engine_sim__add_lobe");
     registerBuiltinType<SetCylinderHeadNode>("__engine_sim__set_cylinder_head");
     registerBuiltinType<ConnectIgnitionWireNode>("__engine_sim__connect_ignition_wire");
     registerBuiltinType<AddIgnitionModuleNode>("__engine_sim__add_ignition_module");
     registerBuiltinType<k_28inH2ONode>("__engine_sim__k_28inH2O");
+    registerBuiltinType<k_30inH2ONode>("__engine_sim__k_30inH2O");
+    registerBuiltinType<k_32inH2ONode>("__engine_sim__k_32inH2O");
     registerBuiltinType<k_CarbNode>("__engine_sim__k_carb");
+    registerBuiltinType<GeneratePortLobeNode>("__engine_sim__generate_port_lobe");
     registerBuiltinType<GenerateHarmonicCamLobeNode>("__engine_sim__generate_harmonic_cam_lobe");
     registerBuiltinType<SetApplicationSettingsNode>("__engine_sim__set_application_settings");
     registerBuiltinType<SetVehicleNode>("__engine_sim__set_vehicle");
@@ -170,6 +179,8 @@ void es_script::LanguageRules::registerBuiltinNodeTypes() {
     registerBuiltinType<TransmissionNode>("__engine_sim__transmission");
     registerBuiltinType<DirectThrottleLinkageNode>("__engine_sim__direct_throttle_linkage");
     registerBuiltinType<GovernorNode>("__engine_sim__governor");
+    registerBuiltinType<CompressorStageNode>("__engine_sim__compressor_stage");
+    registerBuiltinType<ForcedInductionNode>("__engine_sim__forced_induction");
 
     // String operations
     registerBuiltinType<piranha::OperationNodeSpecialized<

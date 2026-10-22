@@ -11,13 +11,14 @@ TEST(HostSettingsTests, Defaults) {
     const HostSettings settings;
     EXPECT_TRUE(settings.bridge.connect);
     EXPECT_FALSE(settings.bridge.driveCar);
+    EXPECT_TRUE(settings.bridge.matchCarPower);
     EXPECT_FLOAT_EQ(settings.bridge.volume, 0.20f);
     EXPECT_EQ(settings.headroomDb, 6);
     EXPECT_FLOAT_EQ(settings.bridge.beamIdleRpm, 1100.0f);
     EXPECT_FALSE(settings.bridge.tuneBeamEngine);
     EXPECT_TRUE(settings.bridge.neutralEq);
-    EXPECT_TRUE(settings.bridge.intakeSound);
-    EXPECT_TRUE(settings.bridge.exhaustSound);
+    EXPECT_FLOAT_EQ(settings.bridge.intakeLevel, 0.35f);
+    EXPECT_FLOAT_EQ(settings.bridge.exhaustLevel, 1.0f);
     EXPECT_FALSE(settings.bridge.keepGameLowCut);
     EXPECT_EQ(settings.simulationFrequency, 0);
     EXPECT_TRUE(settings.script.empty());
@@ -65,7 +66,7 @@ TEST(HostSettingsTests, SaveAndLoadRoundTrip) {
     settings.simulationFrequency = 12000;
     settings.bridge.tuneBeamEngine = true;
     settings.bridge.neutralEq = false;
-    settings.bridge.intakeSound = false;
+    settings.bridge.intakeLevel = 0.5f;
 
     std::string error;
     ASSERT_TRUE(settings.save(path, &error)) << error;
@@ -76,8 +77,8 @@ TEST(HostSettingsTests, SaveAndLoadRoundTrip) {
     EXPECT_EQ(loaded.simulationFrequency, 12000);
     EXPECT_TRUE(loaded.bridge.tuneBeamEngine);
     EXPECT_FALSE(loaded.bridge.neutralEq);
-    EXPECT_FALSE(loaded.bridge.intakeSound);
-    EXPECT_TRUE(loaded.bridge.exhaustSound);
+    EXPECT_FLOAT_EQ(loaded.bridge.intakeLevel, 0.5f);
+    EXPECT_FLOAT_EQ(loaded.bridge.exhaustLevel, 1.0f);
 
     std::filesystem::remove_all(dir);
 }
@@ -96,8 +97,29 @@ TEST(HostSettingsTests, CorruptFileFallsBackToDefaults) {
     std::filesystem::remove_all(dir);
 }
 
+TEST(HostSettingsTests, OldOnOffSwitchesBecomeLevels) {
+    HostSettings settings;
+    std::string error;
+    ASSERT_TRUE(settings.merge(json{ { "bridge", { { "intake_sound", false }, { "exhaust_sound", true } } } }, &error)) << error;
+    EXPECT_FLOAT_EQ(settings.bridge.intakeLevel, 0.0f);
+    EXPECT_FLOAT_EQ(settings.bridge.exhaustLevel, 1.0f);
+}
+
 TEST(HostSettingsTests, MissingFileIsNotAnError) {
     std::string error;
     HostSettings::load("/nonexistent/engine-sim/settings.json", &error);
     EXPECT_TRUE(error.empty());
+}
+
+// Settings saved before the level memory default changed carry the old default explicitly;
+// they get the new default, while a value someone chose is kept
+TEST(HostSettingsTests, OldLevelMemoryDefaultIsUpgraded) {
+    HostSettings settings;
+    std::string error;
+    ASSERT_TRUE(settings.merge(nlohmann::json{ { "audio", { { "leveler_release", 0.02266 } } } }, &error)) << error;
+    EXPECT_DOUBLE_EQ(settings.levelerRelease, HostSettings().levelerRelease);
+    ASSERT_TRUE(settings.merge(nlohmann::json{ { "audio", { { "leveler_release", 2.0 } } } }, &error)) << error;
+    EXPECT_DOUBLE_EQ(settings.levelerRelease, HostSettings().levelerRelease);
+    ASSERT_TRUE(settings.merge(nlohmann::json{ { "audio", { { "leveler_release", 0.5 } } } }, &error)) << error;
+    EXPECT_DOUBLE_EQ(settings.levelerRelease, 0.5);
 }

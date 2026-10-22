@@ -42,6 +42,8 @@ namespace es_script {
             addInput("low_efficiency_attenuation", &m_parameters.lowEfficiencyAttenuation);
             addInput("max_turbulence_effect", &m_parameters.maxTurbulenceEffect);
             addInput("max_dilution_effect", &m_parameters.maxDilutionEffect);
+            addInput("dilution_sensitivity", &m_parameters.dilutionSensitivity);
+            addInput("cyclic_variation", &m_parameters.cyclicVariation);
 
             ObjectReferenceNode<FuelNode>::registerInputs();
         }

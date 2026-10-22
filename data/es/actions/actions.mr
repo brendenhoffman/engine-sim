@@ -107,6 +107,52 @@ public node add_cylinder {
     )
 }
 
+private node _add_rotor_face => __engine_sim__add_rotor_face {
+    input exhaust_system [exhaust_system];
+    input intake [intake];
+    input rotor_housing [cylinder_bank];
+    input ignition_wire [ignition_wire];
+    input sound_attenuation [float];
+    input primary_length [float];
+    input seal_leakage [float];
+}
+
+// A rotor face, the rotary's equivalent of add_cylinder
+public node add_face {
+    input intake;
+    input exhaust_system;
+    input ignition_wire;
+    input sound_attenuation: 1.0;
+    input primary_length: 0.0;
+    input seal_leakage: 0.0;      // Apex/side seal leakage (like piston blowby), e.g. k_28inH2O(0.2)
+    input this;
+    alias output __out: this;
+
+    _add_rotor_face(
+        exhaust_system: exhaust_system,
+        intake: intake,
+        ignition_wire: ignition_wire,
+        rotor_housing: this,
+        sound_attenuation: sound_attenuation,
+        primary_length: primary_length,
+        seal_leakage: seal_leakage
+    )
+}
+
+private node _add_stage => __engine_sim__add_stage {
+    input stage [compressor_stage];
+    input forced_induction [forced_induction];
+}
+
+// A turbocharger or supercharger feeding a forced_induction setup
+public node add_stage {
+    input stage;
+    input this;
+    alias output __out: this;
+
+    _add_stage(stage: stage, forced_induction: this)
+}
+
 private node _add_sample => __engine_sim__add_sample {
     input x [float];
     input y [float];
@@ -148,6 +194,16 @@ public node set_cylinder_head {
 }
 
 public node k_28inH2O => __engine_sim__k_28inH2O {
+    input flow [float]: 1.0;
+    alias output __out [float];
+}
+
+public node k_30inH2O => __engine_sim__k_30inH2O {
+    input flow [float]: 1.0;
+    alias output __out [float];
+}
+
+public node k_32inH2O => __engine_sim__k_32inH2O {
     input flow [float]: 1.0;
     alias output __out [float];
 }
@@ -196,7 +252,36 @@ public node _generate_harmonic_cam_lobe => __engine_sim__generate_harmonic_cam_l
     input gamma [float];
     input lift [float];
     input steps [int];
+    input cycle_angle [float];
     input function [function];
+}
+
+private node _generate_port_lobe => __engine_sim__generate_port_lobe {
+    input duration [float];
+    input ramp [float];
+    input cycle_angle [float];
+    input steps [int];
+    input function [function];
+}
+
+// A port's opening (0 shut to 1 fully open) as a lobe profile, for a camshaft whose lobes are
+// the port centres: duration from first crack to shut, ramp to open fully, in crank degrees.
+// Use cycle_angle 1080 deg for rotaries and 360 deg for two-strokes.
+public node port_lobe {
+    input duration;
+    input ramp: 30 * units.deg;
+    input cycle_angle: 720 * units.deg;
+    input steps: 100;
+    alias output __out: generated_function;
+
+    function generated_function()
+    _generate_port_lobe(
+        duration: duration,
+        ramp: ramp,
+        cycle_angle: cycle_angle,
+        steps: steps,
+        function: generated_function
+    )
 }
 
 public node harmonic_cam_lobe {
@@ -204,6 +289,7 @@ public node harmonic_cam_lobe {
     input gamma: 1.0;
     input lift: 300 * units.thou;
     input steps: 100;
+    input cycle_angle: 720 * units.deg; // 360 deg for a two-stroke's cam
     alias output __out: generated_function;
 
     function generated_function()
@@ -212,6 +298,7 @@ public node harmonic_cam_lobe {
         gamma: gamma,
         lift: lift,
         steps: steps,
+        cycle_angle: cycle_angle,
         function: generated_function
     )    
 }

@@ -66,9 +66,9 @@ public:
         return true;
     }
 
-    bool sliderFloat(const char *label, const char *path, float min, float max, const char *format, float displayScale = 1.0f) {
+    bool sliderFloat(const char *label, const char *path, float min, float max, const char *format, float displayScale = 1.0f, ImGuiSliderFlags flags = 0) {
         float value = current(path, 0.0f) * displayScale;
-        const bool changed = ImGui::SliderFloat(label, &value, min, max, format);
+        const bool changed = ImGui::SliderFloat(label, &value, min, max, format, flags);
         finishSlider(path, json(value / displayScale), changed);
         return changed;
     }
@@ -140,6 +140,66 @@ private:
 
 // A live engine-sound slider. Shows engine-sim's current value except while (or just after)
 // it's being dragged; sends at most 10 updates a second, plus the final value on release.
+// The engine's idle air, live: percent past the closed throttle, like an idle screw
+// Vacuum and boost, as a dashboard gauge reads them: inches of mercury below ambient, psi above.
+// Zero sits a third of the way along; boost scales to whatever the engine has reached.
+void boostGauge(const json &engine) {
+    const double kpa = field(engine, "manifold_kpa", 0.0);
+    static double topKpa = 70;
+    topKpa = std::max(topKpa, kpa);
+
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    const float width = ImGui::GetContentRegionAvail().x;
+    const float height = ImGui::GetFrameHeight();
+    ImDrawList *draw = ImGui::GetWindowDrawList();
+    const float zero = origin.x + width / 3;
+    const float x = (kpa < 0)
+        ? zero + static_cast<float>(std::max(kpa, -100.0) / 100.0) * (width / 3)
+        : zero + static_cast<float>(std::min(kpa / topKpa, 1.0)) * (2 * width / 3);
+    draw->AddRectFilled(origin, ImVec2(origin.x + width, origin.y + height), ImGui::GetColorU32(ImGuiCol_FrameBg));
+    draw->AddRectFilled(ImVec2(std::min(x, zero), origin.y), ImVec2(std::max(x, zero), origin.y + height),
+        kpa < 0 ? IM_COL32(70, 120, 200, 255) : IM_COL32(230, 140, 40, 255));
+    draw->AddLine(ImVec2(zero, origin.y), ImVec2(zero, origin.y + height), IM_COL32(255, 255, 255, 160));
+
+    char text[64];
+    if (kpa < 0) std::snprintf(text, sizeof(text), "%.1f inHg vacuum", -kpa * 0.2953);
+    else std::snprintf(text, sizeof(text), "%.1f psi boost", kpa * 0.145038);
+    const ImVec2 size = ImGui::CalcTextSize(text);
+    draw->AddText(ImVec2(origin.x + (width - size.x) / 2, origin.y + (height - size.y) / 2), IM_COL32(255, 255, 255, 255), text);
+    ImGui::Dummy(ImVec2(width, height));
+
+    const json shafts = field(engine, "compressor_krpm", json());
+    if (shafts.is_array() && !shafts.empty()) {
+        std::string line = shafts.size() > 1 ? "Compressors:" : "Compressor:";
+        for (const json &s : shafts) {
+            char buf[24];
+            std::snprintf(buf, sizeof(buf), " %.0fk rpm", s.get<double>());
+            line += buf;
+        }
+        ImGui::TextColored(Muted, "%s", line.c_str());
+    }
+}
+
+void idleAirSlider(ControlClient &client, const json &engine) {
+    static float pending = -1;
+    static clock_type::time_point changed, sent;
+
+    float value = static_cast<float>(field(engine, "idle_air", 0.0));
+    if (pending >= 0 && clock_type::now() - changed < std::chrono::milliseconds(1500)) value = pending;
+    else pending = -1;
+
+    const bool moved = ImGui::SliderFloat("Idle air", &value, 0.0f, 20.0f, "%.2f%%", ImGuiSliderFlags_Logarithmic);
+    const bool released = ImGui::IsItemDeactivatedAfterEdit();
+    if (moved || released) {
+        pending = value;
+        changed = clock_type::now();
+        if (released || clock_type::now() - sent > std::chrono::milliseconds(100)) {
+            client.send({ { "cmd", "idle_air" }, { "percent", value } });
+            sent = clock_type::now();
+        }
+    }
+}
+
 void synthSlider(ControlClient &client, const json &synth, const char *label, const char *key, float scale, const char *format, ImGuiSliderFlags flags = 0) {
     struct Pending { float value; clock_type::time_point changed, sent; };
     static std::map<std::string, Pending> pending;
@@ -271,6 +331,7 @@ void drawPanel(SDL_Window *window, ControlClient &client, SettingsEditor &editor
             char rpmText[32];
             std::snprintf(rpmText, sizeof(rpmText), "%.0f rpm", rpm);
             ImGui::ProgressBar(static_cast<float>(std::min(rpm / redline, 1.0)), ImVec2(-FLT_MIN, 0), rpmText);
+            boostGauge(engine);
 
             const double load = field(performance, "load", 0.0);
             ImGui::TextColored(load > 0.9 ? Red : Muted, "%d Hz simulation, %.0f%% of a CPU core",
@@ -282,6 +343,13 @@ void drawPanel(SDL_Window *window, ControlClient &client, SettingsEditor &editor
             const std::string shortName = (script.parent_path().filename() / script.filename()).string();
             ImGui::TextColored(Muted, "%s", shortName.c_str());
             ImGui::SetItemTooltip("%s", script.c_str());
+
+            if (engine.contains("idle_air")) {
+                idleAirSlider(client, engine);
+                help("Air past the closed throttle, like an idle screw: more idles faster and smoother, less idles slower and lumpier (big-port rotaries misfire and lope). In BeamNG the game sets the idle speed, but this still changes how the idle sounds. Resets when an engine loads.");
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Reset##idle")) client.send({ { "cmd", "idle_air" }, { "reset", true } });
+            }
         }
         else {
             ImGui::TextColored(Red, "No engine loaded");
@@ -317,15 +385,27 @@ void drawPanel(SDL_Window *window, ControlClient &client, SettingsEditor &editor
         editor.checkbox("Game's low cut", "/bridge/game_low_cut");
         help("BeamNG filters out everything below ~90-190 Hz on engine sound, which is where engine-sim's body is. Off lets the low end through (needs the updated plugin).");
 
-        editor.checkbox("Intake", "/bridge/intake_sound");
-        ImGui::SameLine();
-        editor.checkbox("Exhaust", "/bridge/exhaust_sound");
-        help("Which of the car's sound sources play engine-sim.");
+        editor.sliderFloat("Intake level", "/bridge/intake_level", 0, 100, "%.0f%%", 100.0f);
+        help("engine-sim through the car's intake sound, at the engine. engine-sim models exhaust sound, so a lower level here keeps the exhaust's character from being masked, especially in front-engined cars.");
+        editor.sliderFloat("Exhaust level", "/bridge/exhaust_level", 0, 100, "%.0f%%", 100.0f);
+        help("engine-sim through the car's exhaust sound, at the tailpipe.");
+        editor.checkbox("Game's afterfire burble", "/bridge/game_burble");
+        help("BeamNG's sustained afterfire: a recorded popcorn burble that plays off throttle (strong on race ECUs). Off keeps the game's single bangs and shift bangs but drops the burble, and its flames, so it doesn't play over engine-sim.");
+        {
+            static const char *modes[] = { "Engine's choice", "Follow the game", "Free-running" };
+            int mode = std::clamp(editor.current("/bridge/idle_mode", 0), 0, 2);
+            if (ImGui::Combo("Idle", &mode, modes, 3)) editor.commit("/bridge/idle_mode", mode, true);
+            help("How engine-sim idles in game. Follow the game: its revs are pulled to the game's idle (Idle follow sets how loosely). Free-running: it idles on its own as in its own window, lumpy idles and all, and is only steered back if it strays 300+ rpm. Engine's choice: lumpy big-port engines run free, others follow.");
+        }
+        editor.sliderFloat("Idle follow", "/bridge/idle_follow_hz", 0, 10, "%.1f Hz");
+        help("At idle, how quickly engine-sim's revs are pulled back to the game's idle speed. Slow (around 1-2 Hz) keeps the average on the game's tach while each firing and misfire still swings the revs, as a lumpy idle does. 0 holds it rigidly to the game's speed.");
 
         ImGui::SeparatorText("Performance");
         editor.checkbox("engine-sim drives the car", "/bridge/drive_car");
         help("Off: engine-sim only makes the sound and the car keeps its own engine. On: the car gets engine-sim's torque, so it accelerates like the loaded engine (fun, but an F1 engine in a truck bogs and stalls).");
         ImGui::BeginDisabled(!editor.current("/bridge/drive_car", false));
+        editor.checkbox("Match the car's power", "/bridge/match_car_power");
+        help("Scales engine-sim's torque to the car's own torque curve (measured with a short rev sweep while the car plays its stock sound), so it keeps its stock power but responds like engine-sim's engine. Off: the raw engine, an F1 engine in a truck and all.");
         int idleRpm = static_cast<int>(std::lround(editor.current("/bridge/beam_idle_rpm", 1100.0)));
         if (ImGui::SliderInt("Stock torque below", &idleRpm, 0, 3000, idleRpm == 0 ? "off" : "%d rpm")) {
             editor.commit("/bridge/beam_idle_rpm", idleRpm, false);
@@ -390,6 +470,14 @@ void drawPanel(SDL_Window *window, ControlClient &client, SettingsEditor &editor
                 ImGui::TextColored(Muted, "Supercharger: %s (%s)", field(sc, "name", std::string("fitted")).c_str(), field(sc, "type", std::string("?")).c_str());
             }
 
+            ImGui::BeginDisabled(snap.busy);
+            if (ImGui::Button("Build engine from this car")) client.send({ { "cmd", "generate" } });
+            ImGui::EndDisabled();
+            help("Builds an engine-sim engine from what BeamNG knows about this car's engine (layout, displacement, revs), estimating the rest, and loads it. Saved under ~/.local/share/engine-sim/generated/ so you can copy and tweak it.");
+            ImGui::SameLine();
+            editor.checkbox("Automatically", "/bridge/auto_engine");
+            help("Build and load a matching engine whenever you get in a different car or change its engine.");
+
             if (curve.size() >= 2) {
                 char overlay[64];
                 std::snprintf(overlay, sizeof(overlay), "torque, 0-%.0f rpm", maxRpmInTable);
@@ -403,6 +491,10 @@ void drawPanel(SDL_Window *window, ControlClient &client, SettingsEditor &editor
     if (ImGui::CollapsingHeader("Sound", ImGuiTreeNodeFlags_DefaultOpen)) {
         editor.sliderFloat("Headroom", "/audio/headroom_db", 0, 12, "%.1f dB");
         help("Lowers engine-sim's level so its peaks don't clip (harsh, buzzy distortion). 0 dB is upstream engine-sim, which clips; 6 dB is clean.");
+        editor.sliderFloat("Level memory", "/audio/leveler_release", 0.02f, 10.0f, "%.2f s", 1.0f, ImGuiSliderFlags_Logarithmic);
+        help("How long engine-sim's automatic level control remembers a loud moment. Upstream's 0.02 s turns quiet idle up and full throttle down until they're about equally loud; seconds keep an idle quiet for a long time after revving. 0.15 s is the default. It's held still while cranking and stalled, which stops the hissy pumping there.");
+        editor.sliderFloat("Turbo", "/audio/turbo_volume", 0.0f, 5.0f, "%.2f");
+        help("Turbo and supercharger sounds: whine, the rush of air, blow-off valve, flutter. 1 is as the engine sets them; 0 mutes them.");
     }
 
     // --- The synthesizer's mix, as on the engine-sim window's Z/X/C/V/B + scroll

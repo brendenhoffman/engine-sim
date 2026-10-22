@@ -16,6 +16,13 @@ struct HostSettings {
     // Lowers the synthesizer's level so its peaks don't clip. Upstream (0 dB) clips 1.5-3.5% of
     // samples; 3 dB nearly stops it and 6 dB does.
     double headroomDb = 6;
+    // How long the leveler holds a loud peak, seconds. Upstream's 0.023 s turns the quiet between
+    // firing pulses up (idle as loud as full throttle); seconds leave a quiet idle quiet for a long
+    // time after revving. The leveler is frozen while cranking or stopped, which is what stops the
+    // hissy "record scratch" there.
+    double levelerRelease = 0.15;
+    // Turbo and supercharger sounds (whine, hiss, blow-off, flutter) relative to the engine
+    double turboVolume = 1.0;
     BeamBridge::Settings bridge;
 
     nlohmann::json toJson() const;

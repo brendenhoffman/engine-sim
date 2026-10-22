@@ -29,6 +29,41 @@ class Synthesizer {
             float levelerTarget = 30000.0f;
             float levelerMaxGain = 1.9f;
             float levelerMinGain = 0.00001f;
+
+            // How long the leveler remembers a loud peak (time constant, seconds). Upstream's
+            // ~23 ms re-levels between firing pulses, so idle and full throttle end up about
+            // equally loud; seconds keep revving louder than idle.
+            float levelerRelease = 0.02266f;
+
+            // Turbo and supercharger sounds, relative to the leveled engine
+            float turboVolume = 1.0f;
+        };
+
+        // A turbo or supercharger's sounds, synthesized at the audio rate from what the
+        // simulation says about it (VoiceInputs channels each, after the engine's channels)
+        // Pitch (Hz), whine, hiss, flutter (signed flow), blow-off, wastegate, gear pitch (Hz), gear
+        static constexpr int VoiceInputs = 8;
+
+        struct Resonator {
+            // Two-pole band-pass (RBJ, constant peak gain)
+            float b0 = 0, a1 = 0, a2 = 0, x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+            void set(float frequency, float q, float sampleRate);
+            float f(float x) {
+                const float y = b0 * (x - x2) - a1 * y1 - a2 * y2;
+                x2 = x1; x1 = x; y2 = y1; y1 = y;
+                return y;
+            }
+        };
+
+        struct Voice {
+            double phase = 0, gearPhase = 0;
+            float smoothedFrequency = 0, smoothedGear = 0;
+            float drift = 0;            // Slow random pitch wander
+            float slowFlow = 0;         // The compressor's flow, smoothed: surge is the swing about it
+            float surge = 0;            // Envelope of that swing
+            float hissLow = 0;          // One-pole low-pass state, to take the edge off the hiss
+            int counter = 0;
+            Resonator hiss, bov, bovLow, wastegate, chatter;
         };
 
         struct Parameters {
@@ -37,6 +72,7 @@ class Synthesizer {
             int audioBufferSize = 44100;
             float inputSampleRate = 10000;
             float audioSampleRate = 44100;
+            int voiceCount = 0;
             AudioParameters initialAudioParameters;
         };
 
@@ -123,6 +159,25 @@ class Synthesizer {
         std::condition_variable m_cv0;
 
         ProcessingFilters *m_filters;
+
+        // Engine sound channels come first; the rest drive the voices
+        int m_soundChannelCount = 0;
+        std::vector<Voice> m_voices;
+        uint32_t m_noiseState = 0x12345678u;
+        float noise() {
+            m_noiseState ^= m_noiseState << 13;
+            m_noiseState ^= m_noiseState >> 17;
+            m_noiseState ^= m_noiseState << 5;
+            return static_cast<float>(m_noiseState) * (2.0f / 4294967295.0f) - 1.0f;
+        }
+        float renderVoices(int inputSample);
+
+    public:
+        // Freezes the leveler while the engine is cranking or stopped, so the quiet between
+        // cranking pulses isn't turned up into a scratchy hiss
+        void setLevelerHold(bool hold) { m_levelerHold = hold; }
+    private:
+        std::atomic<bool> m_levelerHold{ false };
 };
 
 #endif /* ATG_ENGINE_SIM_ENGINE_SYNTHESIZER_H */

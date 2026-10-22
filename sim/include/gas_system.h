@@ -16,6 +16,41 @@ class GasSystem {
             double p_o2 = 0.0;
         };
 
+        // Heat capacity at constant volume, per mole: c_v = a + b T for each of air, burned gas
+        // and fuel vapour. A mix blends them by its fractions; the burned share is the inert gas
+        // beyond air's own nitrogen (air here is 3 parts inert to 1 of oxygen).
+        struct Properties {
+            double airA, airB;
+            double burnedA, burnedB;
+            double fuelA, fuelB;
+
+            // Upstream's gas: c_v = 5/2 R for everything (gamma 1.4 hot or cold)
+            static const Properties Ideal;
+            // Fitted to JANAF tables over 300-2500 K (300-700 K for the fuel): gamma about 1.39
+            // for cold air, 1.34 for fresh charge (fuel vapour is heavy on heat capacity) and
+            // 1.25 for burned gas at 2000 K. Hot gas takes more heat per degree, so combustion
+            // peaks lower and expansion gives back less: the efficiency of a real engine rather
+            // than of an ideal air cycle.
+            static const Properties Real;
+        };
+
+        // A particular mix's heat capacity
+        struct HeatCapacity {
+            double a = 2.5 * constants::R;
+            double b = 0;
+
+            // Internal energy per mole (zero at 0 K) and its inverse
+            double energy(double T) const { return T * (a + 0.5 * b * T); }
+            double temperature(double u) const {
+                return (b == 0) ? u / a : 2 * u / (a + std::sqrt(a * a + 2 * b * u));
+            }
+            double cv(double T) const { return a + b * T; }
+            double gamma(double T) const { return 1 + constants::R / cv(T); }
+        };
+        static HeatCapacity heatCapacity(const Properties &properties, const Mix &mix);
+        // The choked pressure ratio and flow factor at a heat capacity ratio (tabulated)
+        static void chokedConstantsAt(double hcr, double *limit, double *rate);
+
         struct State {
             double n_mol = 0.0;
             double E_k = 0.0;
@@ -39,6 +74,13 @@ class GasSystem {
 
         void setGeometry(double width, double height, double dx, double dy);
         void initialize(double P, double V, double T, const Mix &mix = {}, int degreesOfFreedom = 5);
+        // Switches the gas model, keeping the gas's pressure and temperature
+        void setProperties(const Properties *properties);
+        const Properties *properties() const { return m_properties; }
+        // Internal energy per mole of a mix at a temperature, in this system's gas model
+        double energyPerMol(double T, const Mix &mix) const;
+        // Enthalpy per mole of this system's gas
+        double enthalpyPerMol() const;
         void reset(double P, double T, const Mix &mix = {});
 
         void setVolume(double V);
@@ -55,6 +97,7 @@ class GasSystem {
         double react(double n, const Mix &mix);
         static double flowConstant(double flowRate, double P, double pressureDrop, double T, double hcr);
         static double k_28inH2O(double flowRateScfm);
+        static double k_inH2O(double flowRateScfm, double testPressureInH2O); // Flow bench rating at any test pressure
         static double k_carb(double flowRateScfm);
         static double flowRate(
             double k_flow,
@@ -89,7 +132,7 @@ class GasSystem {
         inline double n(double V) const;
         inline double kineticEnergy() const;
         inline double kineticEnergy(double n) const;
-        inline double kineticEnergyPerMol() const { return kineticEnergy(1.0); }
+        inline double kineticEnergyPerMol() const { return (n() > 0) ? kineticEnergy() / n() : 0.0; }
         inline double totalEnergy() const;
         inline double bulkKineticEnergy() const;
         inline double c() const;
@@ -108,9 +151,16 @@ class GasSystem {
         inline Mix mix() const { return m_state.mix; }
 
     protected:
+        void updateHeatCapacity();
+        double pressureOverEnergy() const; // pV / E: 2/5 for upstream's gas
+        // The choked pressure ratio and flow factor for this gas's present heat capacity ratio
+        void chokedConstants(double hcr, double *limit, double *rate) const;
+
         State m_state;
 
         int m_degreesOfFreedom = 5;
+        const Properties *m_properties = &Properties::Ideal;
+        HeatCapacity m_heat;
 
         double m_chokedFlowLimit = 0;
         double m_chokedFlowFactorCached = 0;
@@ -215,19 +265,30 @@ inline double GasSystem::dynamicPressure(double dx, double dy) const {
 
     const double x = 1 + ((hcr - 1) / 2) * machNumber_squared;
     double x_d;
-    switch (m_degreesOfFreedom) {
-    case 3:
-        x_d = x * x * x * x * x;
-        break;
-    case 5:
-    {
-        const double x_2 = x * x;
-        const double x_3 = x_2 * x;
-        x_d = x_3 * x_3 * x;
-        break;
+    if (m_heat.b != 0) {
+        // (1 + a)^n - 1 by its series while the flow is slow (it nearly always is): pow() here
+        // was a real cost
+        const double a = x - 1, n = hcr / (hcr - 1);
+        if (a < 0.05) {
+            return staticPressure * a * n * (1 + a * (n - 1) / 2 * (1 + a * (n - 2) / 3 * (1 + a * (n - 3) / 4)));
+        }
+        x_d = std::pow(x, 2 * hcr / (hcr - 1));
     }
-    default:
-        x_d = x;
+    else {
+        switch (m_degreesOfFreedom) {
+        case 3:
+            x_d = x * x * x * x * x;
+            break;
+        case 5:
+        {
+            const double x_2 = x * x;
+            const double x_3 = x_2 * x;
+            x_d = x_3 * x_3 * x;
+            break;
+        }
+        default:
+            x_d = x;
+        }
     }
 
     return staticPressure * (std::sqrt(x_d) - 1);
@@ -240,13 +301,13 @@ inline double GasSystem::mass() const {
 inline double GasSystem::pressure() const {
     const double volume = this->volume();
     return (volume != 0)
-        ? kineticEnergy() / (0.5 * m_degreesOfFreedom * volume)
+        ? n() * constants::R * temperature() / volume
         : 0;
 }
 
 inline double GasSystem::temperature() const {
-    if (n() == 0) return 0;
-    else return kineticEnergy() / (0.5 * m_degreesOfFreedom * n() * constants::R);
+    if (n() <= 0) return 0;
+    else return m_heat.temperature(kineticEnergy() / n());
 }
 
 inline double GasSystem::velocity_x() const {
@@ -280,7 +341,7 @@ inline double GasSystem::n_o2() const {
 }
 
 inline double GasSystem::heatCapacityRatio() const {
-    return heatCapacityRatio(m_degreesOfFreedom);
+    return (m_heat.b == 0) ? heatCapacityRatio(m_degreesOfFreedom) : m_heat.gamma(temperature());
 }
 
 #endif /* ATG_ENGINE_SIM_GAS_SYSTEM_H */

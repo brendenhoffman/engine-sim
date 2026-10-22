@@ -120,6 +120,10 @@ public:
     // Applies now and to engines loaded later.
     void setOutputHeadroom(double db);
     double outputHeadroom() const { return m_outputHeadroomDb; }
+
+    // How long the synthesizer's leveler holds a loud peak (seconds). Applies now and later.
+    void setLevelerRelease(double seconds);
+    void setTurboVolume(double volume);
     double simulationFrequencyOverride() const { return m_frequencyOverride; }
 
     void setSimulationSpeed(double speed) { m_simulationSpeed = speed; }
@@ -170,6 +174,9 @@ private:
     double m_simulationSpeed = 1.0;
     double m_frequencyOverride = 0;
     double m_outputHeadroomDb = 6;
+    bool m_blownUp = false; // The physics diverged; a reload is queued
+    double m_levelerRelease = 0.15; // As HostSettings; the bench and tests start here too
+    double m_turboVolume = 1.0;
     bool m_paused = false;
     bool m_stepOnce = false;
 

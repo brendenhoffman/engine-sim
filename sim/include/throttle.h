@@ -14,6 +14,10 @@ public:
 
     inline double getSpeedControl() const { return m_speedControl; }
 
+    // Automatic idle control, where the throttle has one. Off while something else (the
+    // BeamNG bridge) sets the engine's speed.
+    virtual void setIdleControlEnabled(bool enabled) { (void)enabled; }
+
 protected:
     double m_speedControl;
 };

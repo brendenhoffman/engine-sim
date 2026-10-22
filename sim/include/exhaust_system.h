@@ -41,6 +41,15 @@ class ExhaustSystem : public Part {
         inline ImpulseResponse *getImpulseResponse() const { return m_impulseResponse; }
 
         inline GasSystem *getSystem() { return &m_system; }
+        inline double getOutletFlowRate() const { return m_outletFlowRate; }
+        // A turbocharger's turbine (and wastegate) takes over the outlet
+        void setOutletExternal(bool external) { m_outletExternal = external; }
+        bool isOutletExternal() const { return m_outletExternal; }
+        void setExternalFlow(double flow) { m_flow = flow; }
+        void setGasProperties(const GasSystem::Properties *properties) {
+            m_system.setProperties(properties);
+            m_atmosphere.setProperties(properties);
+        }
 
     protected:
         GasSystem m_atmosphere;
@@ -53,6 +62,7 @@ class ExhaustSystem : public Part {
         double m_collectorCrossSectionArea;
         double m_primaryFlowRate;
         double m_outletFlowRate;
+        bool m_outletExternal = false;
         double m_audioVolume;
         double m_velocityDecay;
         int m_index;

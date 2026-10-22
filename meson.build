@@ -40,6 +40,7 @@ if build_gui
 endif
 if get_option('headless')
   subdir('frontend/headless')
+  subdir('frontend/bench')
 endif
 build_control_panel = get_option('control_panel').allowed() and dependency('sdl3', version: '>=3.2', required: get_option('control_panel')).found()
 if build_control_panel

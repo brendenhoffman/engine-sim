@@ -122,7 +122,8 @@ void ControlClient::run() {
                 m_snapshot.busy = true;
             }
 
-            const bool slow = next.value("cmd", "") == "load";
+            const std::string cmd = next.value("cmd", "");
+            const bool slow = cmd == "load" || cmd == "generate"; // Both compile an engine script
             json reply;
             const bool ok = request(next, &reply, slow ? 65000 : 3000);
 
@@ -152,6 +153,16 @@ void ControlClient::run() {
             }
 
             std::lock_guard<std::mutex> lock(m_mutex);
+            // A new engine build (the automatic ones too): show what was built
+            const json build = reply.value("last_build", json::object());
+            const int buildId = build.is_object() ? build.value("id", 0) : 0;
+            if (buildId != m_lastBuildId) {
+                if (buildId > 0) {
+                    m_snapshot.message = build.value("message", std::string());
+                    m_snapshot.messageIsError = !build.value("ok", false);
+                }
+                m_lastBuildId = buildId;
+            }
             m_snapshot.connected = true;
             m_snapshot.status = std::move(reply);
             nextStatus = clock_type::now() + std::chrono::milliseconds(100);

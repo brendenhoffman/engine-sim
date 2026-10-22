@@ -4,6 +4,7 @@
 
 #include <cassert>
 #include <cmath>
+#include <algorithm>
 
 #undef min
 #undef max
@@ -33,8 +34,19 @@ Synthesizer::~Synthesizer() {
     assert(m_filters == nullptr);
 }
 
+void Synthesizer::Resonator::set(float frequency, float q, float sampleRate) {
+    const float w0 = 2.0f * 3.14159265f * std::min(frequency, 0.45f * sampleRate) / sampleRate;
+    const float alpha = std::sin(w0) / (2 * q);
+    const float a0 = 1 + alpha;
+    b0 = alpha / a0;
+    a1 = -2 * std::cos(w0) / a0;
+    a2 = (1 - alpha) / a0;
+}
+
 void Synthesizer::initialize(const Parameters &p) {
-    m_inputChannelCount = p.inputChannelCount;
+    m_soundChannelCount = p.inputChannelCount;
+    m_voices.assign(p.voiceCount, Voice());
+    m_inputChannelCount = p.inputChannelCount + VoiceInputs * p.voiceCount;
     m_inputBufferSize = p.inputBufferSize;
     m_inputWriteOffset = p.inputBufferSize;
     m_audioBufferSize = p.audioBufferSize;
@@ -48,14 +60,14 @@ void Synthesizer::initialize(const Parameters &p) {
     m_processed = true;
 
     m_audioBuffer.initialize(p.audioBufferSize);
-    m_inputChannels = new InputChannel[p.inputChannelCount];
-    for (int i = 0; i < p.inputChannelCount; ++i) {
+    m_inputChannels = new InputChannel[m_inputChannelCount];
+    for (int i = 0; i < m_inputChannelCount; ++i) {
         m_inputChannels[i].transferBuffer = new float[p.inputBufferSize];
         m_inputChannels[i].data.initialize(p.inputBufferSize);
     }
 
-    m_filters = new ProcessingFilters[p.inputChannelCount];
-    for (int i = 0; i < p.inputChannelCount; ++i) {
+    m_filters = new ProcessingFilters[m_inputChannelCount];
+    for (int i = 0; i < m_inputChannelCount; ++i) {
         m_filters[i].airNoiseLowPass.setCutoffFrequency(
             m_audioParameters.airNoiseFrequencyCutoff, m_audioSampleRate);
 
@@ -252,6 +264,9 @@ void Synthesizer::renderAudio() {
             static_cast<float>(params.airNoiseFrequencyCutoff), m_audioSampleRate);
         m_filters[i].jitterFilter.setJitterScale(params.inputSampleNoise);
     }
+    m_levelingFilter.p_peakDecay = m_levelerHold
+        ? 1.0f
+        : static_cast<float>(std::exp(-1.0 / (std::max(params.levelerRelease, 0.001f) * m_audioSampleRate)));
 
     m_renderScratch.resize(n);
     for (int i = 0; i < n; ++i) {
@@ -298,7 +313,7 @@ int16_t Synthesizer::renderAudio(int inputSample, const AudioParameters &params)
     const float convAmount = params.convolution;
 
     float signal = 0;
-    for (int i = 0; i < m_inputChannelCount; ++i) {
+    for (int i = 0; i < m_soundChannelCount; ++i) {
         const float r_0 = 2.0 * ((double)rand() / RAND_MAX) - 1.0;
 
         const float jitteredSample =
@@ -332,7 +347,11 @@ int16_t Synthesizer::renderAudio(int inputSample, const AudioParameters &params)
     signal = m_antialiasing.fast_f(signal);
 
     m_levelingFilter.p_target = params.levelerTarget;
-    const float v_leveled = m_levelingFilter.f(signal) * params.volume;
+    float v_leveled = m_levelingFilter.f(signal) * params.volume;
+    if (!m_voices.empty()) {
+        // After the leveler: as loud on every engine, and not pumped by it
+        v_leveled += params.volume * params.turboVolume * params.levelerTarget * renderVoices(inputSample);
+    }
     int r_int = std::lround(v_leveled);
     if (r_int > INT16_MAX) {
         r_int = INT16_MAX;
@@ -342,6 +361,81 @@ int16_t Synthesizer::renderAudio(int inputSample, const AudioParameters &params)
     }
 
     return static_cast<int16_t>(r_int);
+}
+
+float Synthesizer::renderVoices(int inputSample) {
+    const float sr = m_audioSampleRate;
+    const float twoPi = 6.28318530718f;
+    float out = 0;
+    for (size_t v = 0; v < m_voices.size(); ++v) {
+        Voice &voice = m_voices[v];
+        const float *in[VoiceInputs];
+        for (int k = 0; k < VoiceInputs; ++k) {
+            in[k] = m_inputChannels[m_soundChannelCount + VoiceInputs * v + k].transferBuffer;
+        }
+        const float frequency = std::max(0.0f, in[0][inputSample]);
+        const float whine = std::max(0.0f, in[1][inputSample]);
+        const float hiss = std::max(0.0f, in[2][inputSample]);
+        const float flow = in[3][inputSample];
+        const float bov = std::max(0.0f, in[4][inputSample]);
+        const float wastegate = std::max(0.0f, in[5][inputSample]);
+        const float gearFrequency = std::max(0.0f, in[6][inputSample]);
+        const float gear = std::max(0.0f, in[7][inputSample]);
+
+        voice.smoothedFrequency += 0.002f * (frequency - voice.smoothedFrequency);
+        voice.smoothedGear += 0.002f * (gearFrequency - voice.smoothedGear);
+        voice.drift += 0.0005f * (noise() - voice.drift);
+        const float pitch = std::min(voice.smoothedFrequency, 0.45f * sr) * (1 + 0.004f * voice.drift);
+        if (voice.counter-- <= 0) {
+            voice.counter = 32;
+            voice.hiss.set(std::clamp(0.5f * pitch, 600.0f, 4000.0f), 0.8f, sr);
+            voice.bov.set(2400.0f, 0.7f, sr);
+            voice.bovLow.set(700.0f, 0.9f, sr);
+            voice.wastegate.set(1300.0f, 0.6f, sr);
+            voice.chatter.set(500.0f, 1.0f, sr);
+        }
+
+        // Whine: the impeller's tone. Harmonics stop short of the top of the audio band (past
+        // it they fold back down as harsh, warbling aliases), and very high whistles are
+        // softened, as they are by the time they reach you.
+        voice.phase += twoPi * pitch / sr;
+        if (voice.phase > twoPi) voice.phase -= twoPi;
+        const float ph = static_cast<float>(voice.phase);
+        const float nyquist = 0.45f * sr;
+        float tone = std::sin(ph);
+        if (2 * pitch < nyquist) tone += 0.25f * std::sin(2 * ph);
+        if (3 * pitch < nyquist) tone += 0.06f * std::sin(3 * ph);
+        const float tilt = 1 / (1 + (pitch / 6000.0f) * (pitch / 6000.0f));
+        out += 0.15f * whine * tilt * tone;
+
+        // Gears driving a supercharger
+        if (gear > 0) {
+            const float gp = std::min(voice.smoothedGear, nyquist);
+            voice.gearPhase += twoPi * gp / sr;
+            if (voice.gearPhase > twoPi) voice.gearPhase -= twoPi;
+            const float g = static_cast<float>(voice.gearPhase);
+            const float gtilt = 1 / (1 + (gp / 6000.0f) * (gp / 6000.0f));
+            out += 0.1f * gear * gtilt * (std::sin(g) + (2 * gp < nyquist ? 0.4f * std::sin(2 * g) : 0.0f));
+        }
+
+        // Air rushing through the compressor, its top end rolled off
+        const float rush = voice.hiss.f(noise());
+        voice.hissLow += 0.5f * (rush - voice.hissLow);
+        out += 0.25f * hiss * voice.hissLow;
+
+        // Surge: the compressor's flow swinging back and forth about its average. The swing
+        // itself is the low thump, and it chatters while it lasts.
+        voice.slowFlow += (twoPi * 6.0f / sr) * (flow - voice.slowFlow);
+        const float swing = flow - voice.slowFlow;
+        voice.surge += (twoPi * 20.0f / sr) * (std::abs(swing) - voice.surge);
+        out += voice.surge * 3.0f * voice.chatter.f(noise()) + 0.8f * swing;
+
+        // Blow-off valve and wastegate: venting gas
+        const float n = noise();
+        out += bov * (0.35f * voice.bov.f(n) + 0.15f * voice.bovLow.f(n));
+        out += 0.3f * wastegate * voice.wastegate.f(noise());
+    }
+    return out;
 }
 
 double Synthesizer::getLevelerGain() {

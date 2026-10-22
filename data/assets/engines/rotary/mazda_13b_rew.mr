@@ -1,0 +1,171 @@
+// Mazda 13B-REW [2-rotor, sequential twin turbo], the FD RX-7's engine: 255 hp at 6500 rpm and
+// 294 Nm at 5000 on about 0.7 bar from two small Hitachi HT-15s. The primary turbo works alone
+// up to 4500 rpm; then the secondary, prespooled on a trickle of exhaust, is brought in.
+// Built from the shared Mazda rotor in mazda_rotary.mr (see there for how rotaries are described).
+
+import "engine_sim.mr"
+import "themes/default.mr"
+import "mazda_rotary.mr"
+
+units units()
+constants constants()
+impulse_response_library ir_lib()
+
+public node mazda_13b_rew {
+    alias output __out: engine;
+
+    engine engine(
+        name: "Mazda 13B-REW [2-rotor twin turbo]",
+        starter_torque: 140 * units.lb_ft,
+        starter_speed: 250 * units.rpm,
+        redline: 8000 * units.rpm,
+        real_gas: 1,                       // Real gas heat capacities (hot gas takes more heat per degree)
+        cycle_angle: rotary_cycle(),
+        // Standalone idle control (BeamNG holds the idle itself, so it's off there)
+        idle_speed: 1000 * units.rpm,
+        idle_proportional: 0.5,
+        idle_integral: 0.3,
+        idle_max_opening: 0.3,
+        idle_fuel_cut: 1.3,
+        // Runners and primaries as pipes: waves, ram and reversion from the physics
+        pipe_resolution: 25,
+        // Rotor chambers lose a lot of heat through their long, thin walls; less at idle
+        heat_transfer_coefficient: 800,
+        heat_transfer_reference_speed: 20,
+        idle_rpm: 1000 * units.rpm,             // Where a BeamNG car tuned to it idles
+        throttle_gamma: 2.0,
+        fuel: fuel(
+            max_burning_efficiency: 0.70,             // Calibrated to the real engine's torque (stands in for its lower compression and boost timing)
+            dilution_sensitivity: 1.0,          // Leftover exhaust slows the flame...
+            cyclic_variation: 1.0,              // ...and makes it vary firing to firing: the idle lope
+            turbulence_to_flame_speed_ratio: rotary_flame_speed()
+        ),
+        hf_gain: 0.01,
+        noise: 1.0,
+        jitter: 0.15,
+        simulation_frequency: 20000
+    )
+
+    rotary_wires wires()
+    rotary_shaft c0(rotors: 2, flywheel_mass: 9 * units.kg)
+
+    intake intake(
+        plenum_volume: 2.50 * units.L,
+        plenum_cross_section_area: 30 * units.cm2,
+        intake_flow_rate: k_carb(500),
+        runner_flow_rate: k_carb(600.0),
+        runner_length: 14.0 * units.inch,
+        idle_flow_rate: k_carb(0.0),
+        idle_throttle_plate_position: 0.985,  // Idle air: 1.5% past the closed throttle (tuned by ear in BeamNG)
+        velocity_decay: 0.5
+    )
+
+    // Two HT-15s feeding a top-mount intercooler; a vented blow-off valve
+    forced_induction turbos(
+        intake: intake,
+        exhaust_system: exhaust0,
+        charge_volume: 5.0 * units.L,
+        intercooler: 0.6,
+        boost: 55 * units.kPa,
+        wastegate_flow: k_carb(400),
+        bov_flow: k_carb(150),
+        bov_pressure: 25 * units.kPa
+    )
+    turbos
+        .add_stage(rew_turbo(turbine_flow: k_carb(85)))
+        .add_stage(rew_turbo(sequential_rpm: 4500 * units.rpm, whine_order: 5.0))  // Its own whistle: two the same beat
+
+    exhaust_system_parameters es_params(
+        outlet_flow_rate: k_carb(800),
+        primary_tube_length: 8.0 * units.inch,
+        primary_flow_rate: k_carb(900.0),
+        velocity_decay: 1.0
+    )
+
+    exhaust_system exhaust0(
+        es_params,
+        audio_volume: 3.0,
+        length: 100 * units.inch,
+        impulse_response: ir_lib.mild_exhaust_0
+    )
+
+    mazda_rotor r1(
+        phase: 0 * units.deg, intake: intake, exhaust_system: exhaust0,
+        wire0: wires.w0, wire1: wires.w1, wire2: wires.w2,
+        primary_length: 6 * units.inch
+    )
+    mazda_rotor r2(
+        phase: 180 * units.deg, intake: intake, exhaust_system: exhaust0,
+        wire0: wires.w3, wire1: wires.w4, wire2: wires.w5,
+        primary_length: 7 * units.inch
+    )
+
+    engine
+        .add_cylinder_bank(r1)
+        .add_cylinder_bank(r2)
+    engine.add_crankshaft(c0)
+
+    ignition_module ignition_module(
+        timing_curve: rotary_timing(),
+        rev_limit: 8200 * units.rpm,
+        limiter_duration: 0.08
+    )
+    ignition_module
+        .connect_wire(wires.w0, 0 * units.deg) // rotor 1 face 0
+        .connect_wire(wires.w3, 180 * units.deg) // rotor 2 face 0
+        .connect_wire(wires.w1, 360 * units.deg) // rotor 1 face 1
+        .connect_wire(wires.w4, 540 * units.deg) // rotor 2 face 1
+        .connect_wire(wires.w2, 720 * units.deg) // rotor 1 face 2
+        .connect_wire(wires.w5, 900 * units.deg) // rotor 2 face 2
+
+    engine.add_ignition_module(ignition_module)
+}
+
+private node rew_turbo {
+    input turbine_flow: k_carb(110);
+    input sequential_rpm: 0.0;
+    input whine_order: 4.0;
+    alias output __out:
+        turbocharger(
+            compressor_radius: 23 * units.mm,
+            compressor_flow: 0.25 * units.kg / units.sec,
+            turbine_radius: 22 * units.mm,
+            turbine_flow: turbine_flow,
+            inertia: 0.000015,
+            max_speed: 180000 * units.rpm,
+            sequential_rpm: sequential_rpm,
+            prespool: 0.3,
+            whine_order: whine_order
+        );
+}
+
+private node rotary_vehicle {
+    alias output __out:
+        vehicle(
+            mass: 1300 * units.kg,
+            drag_coefficient: 0.29,
+            cross_sectional_area: (68 * units.inch) * (48 * units.inch),
+            diff_ratio: 4.1,
+            tire_radius: 12 * units.inch,
+            rolling_resistance: 200 * units.N
+        );
+}
+
+private node rotary_transmission {
+    alias output __out:
+        transmission(max_clutch_torque: 400 * units.lb_ft)
+        .add_gear(3.48)
+        .add_gear(2.02)
+        .add_gear(1.39)
+        .add_gear(1.00)
+        .add_gear(0.72);
+}
+
+public node main {
+    set_engine(mazda_13b_rew())
+    set_vehicle(rotary_vehicle())
+    set_transmission(rotary_transmission())
+}
+
+use_default_theme()
+main()

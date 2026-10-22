@@ -165,6 +165,8 @@ void buildSinc() {
     }
 }
 
+// `position` must be >= 0 (callers wait for enough audio), or the phase below goes negative and
+// indexes before the table
 float sincSample(double position) {
     const long long i0 = static_cast<long long>(position);
     const double phase = (position - i0) * SincPhases;
@@ -182,10 +184,21 @@ float sincSample(double position) {
 // ---------------------------------------------------------------- the engine-sim DSP
 
 struct Voice {
-    double readPos;
-    double lagAvg;
     int generation;
+    unsigned long long lastBlock; // The shared block this voice last rendered
 };
+
+// All voices read the stream from one shared position, so the game's several copies of the
+// engine sound (intake and exhaust emitters, new ones after a camera change) play the same
+// samples at the same moment. Separate positions drifted apart by a few samples, which mixes
+// into a phasey comb-filtered sound. FMOD runs every DSP once per mix block, so a voice asked
+// to render again means a new block has started; voices in the same block share its samples.
+std::mutex s_readMutex;
+double s_readPos = -1;      // Start of the current block in the stream
+double s_blockStep = 1;
+double s_lagAvg = 0;
+unsigned long long s_block = 1;
+unsigned int s_blockLength = 0;
 
 std::atomic<int> s_resyncs{0};
 std::atomic<unsigned long long> s_lastStats{0};
@@ -195,7 +208,7 @@ std::atomic<int> s_generation{0};
 std::atomic<int> s_oldVoiceCalls{0};
 
 int esCreate(FmodDspState *state) {
-    state->plugindata = new Voice{ -1, 0, s_generation.load() };
+    state->plugindata = new Voice{ s_generation.load(), 0 };
     return FMOD_OK;
 }
 
@@ -221,7 +234,10 @@ int esProcess(FmodDspState *state, unsigned int length, const FmodDspBufferArray
     if (v->generation != s_generation.load() || nowMs() - s_audioTime.load() > 300) {
         if (inputsIdle) std::memset(dst, 0, sizeof(float) * length * channels);
         else std::memcpy(dst, in->buffers[0], sizeof(float) * length * channels);
-        v->readPos = -1;
+        if (v->generation == s_generation.load()) {
+            std::lock_guard<std::mutex> lock(s_readMutex);
+            s_readPos = -1; // Engine-sim went quiet: line up afresh when it's back
+        }
         return FMOD_OK;
     }
 
@@ -231,20 +247,51 @@ int esProcess(FmodDspState *state, unsigned int length, const FmodDspBufferArray
     // Trail the writer by ~50 ms, steering the rate by at most 0.2% on a ~1 s lag average
     const double target = 2048;
     const long long written = s_written.load();
-    const double lag = written - v->readPos;
-    if (v->readPos < 0 || lag < length * 0.95 + SincTaps || lag > 16384) {
-        if (v->readPos >= 0) s_resyncs++;
-        v->readPos = written - target;
-        v->lagAvg = target;
+
+    // Not enough audio buffered yet (the very first packets of a session): pass the game's sound
+    // through rather than read before the start of the stream
+    if (written < target + SincTaps) {
+        if (inputsIdle) std::memset(dst, 0, sizeof(float) * length * channels);
+        else std::memcpy(dst, in->buffers[0], sizeof(float) * length * channels);
+        std::lock_guard<std::mutex> lock(s_readMutex);
+        s_readPos = -1;
+        return FMOD_OK;
     }
-    v->lagAvg += 0.02 * ((written - v->readPos) - v->lagAvg);
-    const double step = 44100.0 / rate * (1.0 + 0.002 * std::fmax(-1.0, std::fmin(1.0, (v->lagAvg - target) / target)));
+
+    double readPos, step;
+    double lagAvg;
+    {
+        std::lock_guard<std::mutex> lock(s_readMutex);
+        const bool newBlock = v->lastBlock == s_block || s_readPos < 0 || length != s_blockLength;
+        if (newBlock) {
+            // Move the shared position on past the previous block, then steer: trail the
+            // writer by ~50 ms, adjusting the rate by at most 0.2% on a ~1 s lag average
+            if (s_readPos >= 0) s_readPos += s_blockLength * s_blockStep;
+            const double lag = written - s_readPos;
+            if (s_readPos < 0 || lag < length * 0.95 + SincTaps || lag > 16384) {
+                if (s_readPos >= 0) s_resyncs++;
+                s_readPos = written - target;
+                s_lagAvg = target;
+            }
+            s_lagAvg += 0.02 * ((written - s_readPos) - s_lagAvg);
+            s_blockStep = 44100.0 / rate * (1.0 + 0.002 * std::fmax(-1.0, std::fmin(1.0, (s_lagAvg - target) / target)));
+            s_blockLength = length;
+            ++s_block;
+        }
+        v->lastBlock = s_block;
+        readPos = s_readPos;
+        step = s_blockStep;
+        lagAvg = s_lagAvg;
+    }
 
     float peak = 0;
     for (unsigned int i = 0; i < length; ++i) {
-        const float sample = sincSample(v->readPos);
+        // Anything non-finite or absurd reaching FMOD poisons its filters and limiter, silencing
+        // the game until it restarts; never let that out
+        float sample = sincSample(readPos);
+        if (!std::isfinite(sample) || std::fabs(sample) > 4.0f) sample = 0.0f;
         for (int c = 0; c < channels; ++c) dst[i * channels + c] = sample;
-        v->readPos += step;
+        readPos += step;
         peak = std::fmax(peak, std::fabs(sample));
     }
 
@@ -252,7 +299,7 @@ int esProcess(FmodDspState *state, unsigned int length, const FmodDspBufferArray
     if (now - s_lastStats > 10000) {
         s_lastStats = now;
         logf("stats: rate %d ch %d len %u peak %.2f resyncs %d lag %.0f gen %d oldVoiceCalls %d\n",
-            rate, channels, length, peak, s_resyncs.load(), v->lagAvg, s_generation.load(), s_oldVoiceCalls.exchange(0));
+            rate, channels, length, peak, s_resyncs.load(), lagAvg, s_generation.load(), s_oldVoiceCalls.exchange(0));
     }
     return FMOD_OK;
 }
@@ -402,12 +449,29 @@ void maybeDumpEventBuses() {
             if (s_getDsp(bus, i, &dsp) != FMOD_OK || !dsp) continue;
 
             const std::string name = dspName(dsp);
-            if (name.find("pass") == std::string::npos && name.find("Equalizer") == std::string::npos) continue;
+            if (name.find("pass") == std::string::npos && name.find("Equalizer") == std::string::npos
+                && name.find("Fader") == std::string::npos) continue;
 
             bool bypass = false;
             if (s_dspGetBypass) s_dspGetBypass(dsp, &bypass);
             logf("    [%d] %s%s\n", i, name.c_str(), bypass ? " (bypassed)" : "");
             logParameters(dsp);
+        }
+
+        // The volume stages between the event and the speakers
+        void *parent = nullptr;
+        for (void *group = bus; s_getParentGroup && s_getParentGroup(group, &parent) == FMOD_OK && parent; group = parent) {
+            char groupName[64] = "?";
+            if (s_getGroupName) s_getGroupName(parent, groupName, sizeof(groupName));
+            int parentCount = 0;
+            s_getNumDsps(parent, &parentCount);
+            for (int i = 0; i < parentCount; ++i) {
+                void *dsp = nullptr;
+                if (s_getDsp(parent, i, &dsp) != FMOD_OK || !dsp) continue;
+                if (dspName(dsp) != "FMOD Fader") continue;
+                logf("    parent '%s' fader:\n", groupName);
+                logParameters(dsp);
+            }
         }
     }
 }

@@ -14,6 +14,19 @@
 
 #include <chrono>
 
+// A torque applied to the crank from outside the engine, set each step (the BeamNG bridge
+// uses it to follow the game's idle speed loosely)
+class CrankTorque : public atg_scs::ForceGenerator {
+public:
+    void connect(atg_scs::RigidBody *body) { m_body = body; }
+    virtual void apply(atg_scs::SystemState *system) override {
+        if (m_body != nullptr && torque != 0) system->t[m_body->index] += torque;
+    }
+    double torque = 0; // Along the body's theta
+private:
+    atg_scs::RigidBody *m_body = nullptr;
+};
+
 class Simulator {
 public:
     enum class SystemType {
@@ -23,6 +36,7 @@ public:
 
     struct Parameters {
         SystemType systemType = SystemType::NsvOptimized;
+        int maxSleSolverSteps = 128;
     };
 
     static constexpr int DynoTorqueSamples = 512;
@@ -78,6 +92,8 @@ public:
     double filteredEngineSpeed() const { return m_filteredEngineSpeed; }
 
     Dynamometer m_dyno;
+    CrankTorque m_crankTorque;
+    CrankTorque m_accessoryTorque;   // Superchargers driven off the crank
     StarterMotor m_starterMotor;
 
 protected:

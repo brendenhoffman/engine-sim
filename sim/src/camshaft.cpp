@@ -38,6 +38,10 @@ void Camshaft::destroy() {
     m_lobes = 0;
 }
 
+void Camshaft::setLobeCenterline(int lobe, double crankAngle) {
+    m_lobeAngles[lobe] = crankAngle * (2 * constants::pi / m_crankshaft->getCycleLength());
+}
+
 double Camshaft::valveLift(int lobe) const {
     return sampleLobe(getAngle() + m_lobeAngles[lobe]);
 }
@@ -52,7 +56,7 @@ double Camshaft::sampleLobe(double theta) const {
 
 double Camshaft::getAngle() const {
     const double angle =
-        std::fmod((m_crankshaft->getAngle() + m_advance) * 0.5, 2 * constants::pi);
+        std::fmod((m_crankshaft->getAngle() + m_advance) * (2 * constants::pi / m_crankshaft->getCycleLength()), 2 * constants::pi);
     return (angle < 0)
         ?  angle + 2 * constants::pi
         :  angle;

@@ -1,5 +1,7 @@
 #include "host_settings.h"
 
+#include <cmath>
+
 #include "engine_host.h"
 
 #include <filesystem>
@@ -41,17 +43,22 @@ json HostSettings::toJson() const {
     return {
         { "script", script },
         { "simulation_frequency", simulationFrequency },
-        { "audio", { { "headroom_db", headroomDb } } },
+        { "audio", { { "headroom_db", headroomDb }, { "leveler_release", levelerRelease }, { "turbo_volume", turboVolume } } },
         { "bridge", {
             { "connect", bridge.connect },
             { "drive_car", bridge.driveCar },
+            { "match_car_power", bridge.matchCarPower },
+            { "game_burble", bridge.gameBurble },
+            { "idle_follow_hz", bridge.idleFollowHz },
+            { "idle_mode", bridge.idleMode },
             { "volume", bridge.volume },
             { "beam_idle_rpm", bridge.beamIdleRpm },
             { "tune_beam_engine", bridge.tuneBeamEngine },
             { "neutral_eq", bridge.neutralEq },
-            { "intake_sound", bridge.intakeSound },
-            { "exhaust_sound", bridge.exhaustSound },
+            { "intake_level", bridge.intakeLevel },
+            { "exhaust_level", bridge.exhaustLevel },
             { "game_low_cut", bridge.keepGameLowCut },
+            { "auto_engine", bridge.autoEngine },
         } },
     };
 }
@@ -73,6 +80,12 @@ bool HostSettings::merge(const json &object, std::string *error) {
             return false;
         }
         if (!readField(*audioIt, "headroom_db", &updated.headroomDb, error, 0, 24)) return false;
+        if (!readField(*audioIt, "leveler_release", &updated.levelerRelease, error, 0.005, 60)) return false;
+        if (!readField(*audioIt, "turbo_volume", &updated.turboVolume, error, 0, 10)) return false;
+        // Settings saved under an earlier default hold that default explicitly (0.023 s, then 2 s)
+        if (std::abs(updated.levelerRelease - 0.02266) < 1e-6 || std::abs(updated.levelerRelease - 2.0) < 1e-9) {
+            updated.levelerRelease = HostSettings().levelerRelease;
+        }
     }
 
     const auto bridgeIt = object.find("bridge");
@@ -83,13 +96,26 @@ bool HostSettings::merge(const json &object, std::string *error) {
         }
         if (!readField(*bridgeIt, "connect", &updated.bridge.connect, error)) return false;
         if (!readField(*bridgeIt, "drive_car", &updated.bridge.driveCar, error)) return false;
+        if (!readField(*bridgeIt, "match_car_power", &updated.bridge.matchCarPower, error)) return false;
+        if (!readField(*bridgeIt, "game_burble", &updated.bridge.gameBurble, error)) return false;
+        if (!readField(*bridgeIt, "idle_follow_hz", &updated.bridge.idleFollowHz, error, 0, 20)) return false;
+        if (!readField(*bridgeIt, "idle_mode", &updated.bridge.idleMode, error, 0, 2)) return false;
         if (!readField(*bridgeIt, "volume", &updated.bridge.volume, error, 0, 4)) return false;
         if (!readField(*bridgeIt, "beam_idle_rpm", &updated.bridge.beamIdleRpm, error, 0, 20000)) return false;
         if (!readField(*bridgeIt, "tune_beam_engine", &updated.bridge.tuneBeamEngine, error)) return false;
         if (!readField(*bridgeIt, "neutral_eq", &updated.bridge.neutralEq, error)) return false;
-        if (!readField(*bridgeIt, "intake_sound", &updated.bridge.intakeSound, error)) return false;
-        if (!readField(*bridgeIt, "exhaust_sound", &updated.bridge.exhaustSound, error)) return false;
+        if (!readField(*bridgeIt, "intake_level", &updated.bridge.intakeLevel, error, 0, 1)) return false;
+        if (!readField(*bridgeIt, "exhaust_level", &updated.bridge.exhaustLevel, error, 0, 1)) return false;
+
+        // Settings saved before the levels existed: an event switched off is level 0
+        bool on = true;
+        if (!readField(*bridgeIt, "intake_sound", &on, error)) return false;
+        if (!on) updated.bridge.intakeLevel = 0;
+        on = true;
+        if (!readField(*bridgeIt, "exhaust_sound", &on, error)) return false;
+        if (!on) updated.bridge.exhaustLevel = 0;
         if (!readField(*bridgeIt, "game_low_cut", &updated.bridge.keepGameLowCut, error)) return false;
+        if (!readField(*bridgeIt, "auto_engine", &updated.bridge.autoEngine, error)) return false;
     }
 
     if (updated.simulationFrequency != 0 && updated.simulationFrequency < 400) {
@@ -154,4 +180,6 @@ void applySettings(EngineHost *host, const HostSettings &settings) {
 
     host->setSimulationFrequencyOverride(settings.simulationFrequency);
     host->setOutputHeadroom(settings.headroomDb);
+    host->setLevelerRelease(settings.levelerRelease);
+    host->setTurboVolume(settings.turboVolume);
 }

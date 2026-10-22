@@ -1,0 +1,205 @@
+// Parts shared by the Mazda rotaries: a 13B-sized rotor in its housing, with ports, runners
+// and the three faces wired up. The engines (13B, 20B, 26B...) stack these at different phases.
+//
+// How a rotary is described:
+// - The engine's cycle_angle is 1080 deg: each rotor face takes three turns of the eccentric
+//   shaft to go through intake, compression, expansion and exhaust.
+// - A rotor_housing is a bank whose three "cylinders" are the rotor's faces (add_face). Face 0
+//   is at compression TDC at the housing's phase, and each next face 360 deg later.
+// - Ports are cam lobes on a camshaft that turns once per cycle: port_lobe() gives the port's
+//   opening, and add_lobe() places it at (face TDC + port centre). Port flow is a function of
+//   that opening (0 shut to 1 fully open).
+// - Port angles are eccentric shaft degrees from the face's compression TDC: expansion runs
+//   0-270, exhaust 270-540, intake 540-810 and compression 810-1080.
+
+import "engine_sim.mr"
+
+units units()
+constants constants()
+
+public node rotary_cycle {
+    alias output __out: 1080 * units.deg;
+}
+
+// The ports and runners of one housing, with port lobes placed for its three faces
+public node mazda_rotor_ports {
+    input phase;
+    // Side intake ports (stock 13B): open 15 deg after overlap TDC, shut 50 deg after BDC
+    input intake_opens: 540 * units.deg + 15 * units.deg;
+    input intake_closes: 810 * units.deg + 50 * units.deg;
+    input intake_ramp: 60 * units.deg;
+    input intake_flow: 275.0;           // cfm at 28 inH2O, fully open
+    // Peripheral exhaust port: opens 75 deg before BDC, shuts 48 deg after overlap TDC
+    input exhaust_opens: 270 * units.deg - 75 * units.deg;
+    input exhaust_closes: 540 * units.deg + 48 * units.deg;
+    input exhaust_ramp: 45 * units.deg;
+    input exhaust_flow: 295.0;
+    input chamber_volume: 81.8 * units.cc;  // 654 cc swept, 9.0:1
+    alias output __out: head;
+
+    label cycle(1080 * units.deg)
+
+    // Opening (0-1) to flow: a port uncovered by the rotor flank opens its area roughly
+    // linearly, with the flow tapering as the port, not the opening, starts to limit it
+    function intake_port_flow(0.1)
+    intake_port_flow
+        .add_sample(0.0, 0.0)
+        .add_sample(0.1, k_28inH2O(intake_flow * 0.11))
+        .add_sample(0.2, k_28inH2O(intake_flow * 0.25))
+        .add_sample(0.3, k_28inH2O(intake_flow * 0.40))
+        .add_sample(0.4, k_28inH2O(intake_flow * 0.55))
+        .add_sample(0.5, k_28inH2O(intake_flow * 0.67))
+        .add_sample(0.6, k_28inH2O(intake_flow * 0.78))
+        .add_sample(0.7, k_28inH2O(intake_flow * 0.87))
+        .add_sample(0.8, k_28inH2O(intake_flow * 0.94))
+        .add_sample(0.9, k_28inH2O(intake_flow * 0.98))
+        .add_sample(1.0, k_28inH2O(intake_flow))
+
+    function exhaust_port_flow(0.1)
+    exhaust_port_flow
+        .add_sample(0.0, 0.0)
+        .add_sample(0.1, k_28inH2O(exhaust_flow * 0.14))
+        .add_sample(0.2, k_28inH2O(exhaust_flow * 0.31))
+        .add_sample(0.3, k_28inH2O(exhaust_flow * 0.47))
+        .add_sample(0.4, k_28inH2O(exhaust_flow * 0.63))
+        .add_sample(0.5, k_28inH2O(exhaust_flow * 0.75))
+        .add_sample(0.6, k_28inH2O(exhaust_flow * 0.85))
+        .add_sample(0.7, k_28inH2O(exhaust_flow * 0.92))
+        .add_sample(0.8, k_28inH2O(exhaust_flow * 0.97))
+        .add_sample(0.9, k_28inH2O(exhaust_flow * 0.99))
+        .add_sample(1.0, k_28inH2O(exhaust_flow))
+
+    port_lobe intake_port(duration: intake_closes - intake_opens, ramp: intake_ramp, cycle_angle: cycle)
+    port_lobe exhaust_port(duration: exhaust_closes - exhaust_opens, ramp: exhaust_ramp, cycle_angle: cycle)
+
+    camshaft_parameters port_params(advance: 0 * units.deg, base_radius: 1 * units.inch)
+    camshaft intake_ports(port_params, lobe_profile: intake_port)
+    camshaft exhaust_ports(port_params, lobe_profile: exhaust_port)
+
+    label intake_centre((intake_opens + intake_closes) / 2)
+    label exhaust_centre((exhaust_opens + exhaust_closes) / 2)
+    label face(360 * units.deg)
+    intake_ports
+        .add_lobe(phase + intake_centre)
+        .add_lobe(phase + face + intake_centre)
+        .add_lobe(phase + 2 * face + intake_centre)
+    exhaust_ports
+        .add_lobe(phase + exhaust_centre)
+        .add_lobe(phase + face + exhaust_centre)
+        .add_lobe(phase + 2 * face + exhaust_centre)
+
+    generic_cylinder_head head(
+        chamber_volume: chamber_volume,
+        intake_runner_volume: 250 * units.cc,
+        intake_runner_cross_section_area: 2.0 * units.inch * 1.6 * units.inch,
+        exhaust_runner_volume: 60 * units.cc,
+        exhaust_runner_cross_section_area: 1.9 * units.inch * 1.6 * units.inch,
+        intake_port_flow: intake_port_flow,
+        exhaust_port_flow: exhaust_port_flow,
+        valvetrain: standard_valvetrain(
+            intake_camshaft: intake_ports,
+            exhaust_camshaft: exhaust_ports
+        )
+    )
+}
+
+// One 13B-sized rotor (R 105 mm, e 15 mm, B 80 mm) in its housing, faces wired and ported.
+// Its faces' wires fire at phase, phase + 360 and phase + 720 deg.
+public node mazda_rotor {
+    input phase;
+    input intake;
+    input exhaust_system;
+    input wire0;
+    input wire1;
+    input wire2;
+    input primary_length: 6 * units.inch;
+    input trailing_delay: 10 * units.deg;    // The trailing plug fires this much after the leading one
+    input ports: mazda_rotor_ports(phase: phase);
+    alias output __out: housing;
+
+    rotor_housing housing(
+        generating_radius: 105 * units.mm,
+        eccentricity: 15 * units.mm,
+        width: 80 * units.mm,
+        phase: phase,
+        trailing_delay: trailing_delay
+    )
+
+    housing
+        .add_face(intake: intake, exhaust_system: exhaust_system, ignition_wire: wire0,
+            primary_length: primary_length, seal_leakage: k_28inH2O(0.1))
+        .add_face(intake: intake, exhaust_system: exhaust_system, ignition_wire: wire1,
+            primary_length: primary_length, seal_leakage: k_28inH2O(0.1))
+        .add_face(intake: intake, exhaust_system: exhaust_system, ignition_wire: wire2,
+            primary_length: primary_length, seal_leakage: k_28inH2O(0.1))
+        .set_cylinder_head(ports)
+}
+
+public node rotary_flame_speed {
+    alias output __out:
+        function(5.0)
+            .add_sample(0.0, 3.0)
+            .add_sample(5.0, 1.5 * 5.0)
+            .add_sample(10.0, 1.75 * 10.0)
+            .add_sample(15.0, 2.0 * 15.0)
+            .add_sample(20.0, 2.0 * 20.0)
+            .add_sample(25.0, 2.0 * 25.0)
+            .add_sample(30.0, 2.0 * 30.0)
+            .add_sample(35.0, 2.0 * 35.0)
+            .add_sample(40.0, 2.0 * 40.0)
+            .add_sample(45.0, 2.0 * 45.0)
+            ;
+}
+
+// Leading-plug timing, shaft degrees
+public node rotary_timing {
+    alias output __out: timing_curve;
+
+    function timing_curve(1000 * units.rpm)
+    timing_curve
+        .add_sample(0 * units.rpm, 0 * units.deg)
+        .add_sample(1000 * units.rpm, 0 * units.deg)
+        .add_sample(2000 * units.rpm, 8 * units.deg)
+        .add_sample(3000 * units.rpm, 15 * units.deg)
+        .add_sample(4000 * units.rpm, 20 * units.deg)
+        .add_sample(5000 * units.rpm, 22 * units.deg)
+        .add_sample(6000 * units.rpm, 24 * units.deg)
+        .add_sample(7000 * units.rpm, 25 * units.deg)
+        .add_sample(8000 * units.rpm, 25 * units.deg)
+        .add_sample(9000 * units.rpm, 25 * units.deg)
+        .add_sample(10000 * units.rpm, 25 * units.deg)
+}
+
+// Eccentric shaft with the flywheel, counterweights and rotors (orbiting at e and spinning at
+// a third of shaft speed) lumped into its inertia
+public node rotary_shaft {
+    input rotors: 2;
+    input flywheel_mass: 9 * units.kg;
+    alias output __out: shaft;
+
+    crankshaft shaft(
+        throw: 15 * units.mm,
+        flywheel_mass: flywheel_mass,
+        mass: 5 * units.kg * rotors,
+        friction_torque: 7 * units.lb_ft * rotors,   // Apex and side seals drag more than rings
+        moment_of_inertia: disk_moment_of_inertia(mass: flywheel_mass, radius: 6 * units.inch) + 0.01 * rotors,
+        position_x: 0.0,
+        position_y: 0.0,
+        tdc: 90 * units.deg
+    )
+}
+
+public node rotary_wires {
+    output w0: ignition_wire();
+    output w1: ignition_wire();
+    output w2: ignition_wire();
+    output w3: ignition_wire();
+    output w4: ignition_wire();
+    output w5: ignition_wire();
+    output w6: ignition_wire();
+    output w7: ignition_wire();
+    output w8: ignition_wire();
+    output w9: ignition_wire();
+    output w10: ignition_wire();
+    output w11: ignition_wire();
+}

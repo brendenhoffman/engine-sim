@@ -42,6 +42,8 @@ namespace es_script {
             context.setEngine(engine);
 
             Engine::Parameters parameters = m_parameters;
+            parameters.idleFreeRunning = m_idleFreeRunning > 0.5;
+            parameters.realGas = m_realGas > 0.5;
             parameters.crankshaftCount = (int)m_crankshafts.size();
             parameters.cylinderBanks = (int)m_cylinderBanks.size();
             parameters.cylinderCount = cylinderCount;
@@ -83,6 +85,7 @@ namespace es_script {
 
             for (int i = 0; i < parameters.crankshaftCount; ++i) {
                 m_crankshafts[i]->generate(engine->getCrankshaft(i), &context);
+                engine->getCrankshaft(i)->setCycleLength(parameters.cycleLength);
             }
 
             for (int i = 0; i < parameters.cylinderBanks; ++i) {
@@ -123,6 +126,10 @@ namespace es_script {
             ccParams.StartingPressure = units::pressure(1.0, units::atm);
             ccParams.StartingTemperature = units::celcius(25.0);
             ccParams.MeanPistonSpeedToTurbulence = meanPistonSpeedToTurbulence;
+            ccParams.HeatTransferCoefficient = parameters.heatTransferCoefficient;
+            ccParams.BlockTemperature = parameters.blockTemperature;
+            ccParams.HeatTransferReferenceSpeed = parameters.heatTransferReferenceSpeed;
+            ccParams.PipeResolution = parameters.pipeResolution;
 
             for (int i = 0; i < engine->getCylinderCount(); ++i) {
                 ccParams.piston = engine->getPiston(i);
@@ -164,6 +171,17 @@ namespace es_script {
             addInput("hf_gain", &m_parameters.initialHighFrequencyGain);
             addInput("jitter", &m_parameters.initialJitter);
             addInput("noise", &m_parameters.initialNoise);
+            addInput("convolution", &m_parameters.initialConvolution);
+            addInput("cycle_angle", &m_parameters.cycleLength);
+            addInput("idle_rpm", &m_parameters.idleRpm);
+            addInput("idle_free_running", &m_idleFreeRunning);
+            addInput("fluid_simulation_steps", &m_parameters.fluidSimulationSteps);
+            addInput("max_sle_solver_steps", &m_parameters.maxSleSolverSteps);
+            addInput("heat_transfer_coefficient", &m_parameters.heatTransferCoefficient);
+            addInput("block_temperature", &m_parameters.blockTemperature);
+            addInput("heat_transfer_reference_speed", &m_parameters.heatTransferReferenceSpeed);
+            addInput("pipe_resolution", &m_parameters.pipeResolution);
+            addInput("real_gas", &m_realGas);
 
             ObjectReferenceNode<EngineNode>::registerInputs();
         }
@@ -180,6 +198,8 @@ namespace es_script {
         FuelNode *m_fuel = nullptr;
 
         Engine::Parameters m_parameters;
+        double m_idleFreeRunning = 0;
+        double m_realGas = 0;
         std::vector<CrankshaftNode *> m_crankshafts;
         std::vector<CylinderBankNode *> m_cylinderBanks;
     };

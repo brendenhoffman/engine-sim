@@ -14,6 +14,7 @@ host_lib = static_library(
     'src/beam_bridge.cpp',
     'src/bridge_transport.cpp',
     'src/control_server.cpp',
+    'src/engine_generator.cpp',
     'src/engine_host.cpp',
     'src/host_settings.cpp',
     'src/wav_reader.cpp',

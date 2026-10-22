@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -185,6 +186,7 @@ bool EngineHost::prepare(Compiled *compiled, Simulator **simulatorOut, std::stri
     audioParams.inputSampleNoise = static_cast<float>(engine->getInitialJitter());
     audioParams.airNoise = static_cast<float>(engine->getInitialNoise());
     audioParams.dF_F_mix = static_cast<float>(engine->getInitialHighFrequencyGain());
+    audioParams.convolution = static_cast<float>(engine->getInitialConvolution());
     simulator->synthesizer().setAudioParameters(audioParams);
 
     for (int i = 0; i < engine->getExhaustSystemCount(); ++i) {
@@ -230,9 +232,12 @@ void EngineHost::install(const Compiled &compiled, Simulator *simulator, const s
     m_simulator = simulator;
     m_applicationSettings = compiled.settings;
     m_loadedScript = script;
+    m_blownUp = false;
     m_audioDue = 0;
     if (m_frequencyOverride > 0) m_simulator->setSimulationFrequency(m_frequencyOverride);
     setOutputHeadroom(m_outputHeadroomDb);
+    setLevelerRelease(m_levelerRelease);
+    setTurboVolume(m_turboVolume);
     if (m_bridge) m_bridge->reset();
 
     // Consumers drop anything pointing into the old engine before it's freed
@@ -368,6 +373,24 @@ void EngineHost::setOutputHeadroom(double db) {
     m_simulator->synthesizer().setAudioParameters(params);
 }
 
+void EngineHost::setLevelerRelease(double seconds) {
+    m_levelerRelease = seconds;
+    if (m_simulator == nullptr) return;
+
+    Synthesizer::AudioParameters params = m_simulator->synthesizer().getAudioParameters();
+    params.levelerRelease = static_cast<float>(seconds);
+    m_simulator->synthesizer().setAudioParameters(params);
+}
+
+void EngineHost::setTurboVolume(double volume) {
+    m_turboVolume = volume;
+    if (m_simulator == nullptr) return;
+
+    Synthesizer::AudioParameters params = m_simulator->synthesizer().getAudioParameters();
+    params.turboVolume = static_cast<float>(volume);
+    m_simulator->synthesizer().setAudioParameters(params);
+}
+
 void EngineHost::post(std::function<void()> job) {
     std::lock_guard<std::mutex> lock(m_jobMutex);
     m_jobs.push_back(std::move(job));
@@ -419,6 +442,7 @@ void EngineHost::simulationThread() {
 
 void EngineHost::tick(double dt) {
     if (m_simulator == nullptr || m_engine == nullptr) return;
+    if (m_blownUp) return; // Waiting for the reload posted below
 
     if (m_paused && !m_stepOnce) {
         m_audioDue = 0;
@@ -445,6 +469,16 @@ void EngineHost::tick(double dt) {
     const auto t1 = std::chrono::steady_clock::now();
 
     m_simulator->endFrame();
+
+    // Rarely, a violent change (the dyno yanking the crank thousands of rpm in a frame) makes
+    // the physics diverge. It never recovers on its own, so reload the engine.
+    const double speed = m_engine->getSpeed();
+    if (!std::isfinite(speed) || std::abs(speed) > units::rpm(60000)) {
+        m_blownUp = true;
+        std::fprintf(stderr, "engine-sim: the simulation became unstable; reloading %s\n", m_loadedScript.c_str());
+        post([this, script = m_loadedScript] { loadScript(script); });
+        return;
+    }
 
     stats.processingSeconds = std::chrono::duration<double>(t1 - t0).count();
 

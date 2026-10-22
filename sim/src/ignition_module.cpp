@@ -53,8 +53,8 @@ void IgnitionModule::reset() {
 void IgnitionModule::update(double dt) {
     const double cycleAngle = m_crankshaft->getCycleAngle();
 
-    if (m_enabled && m_revLimitTimer == 0) {
-        const double fourPi = 4 * constants::pi;
+    if (m_enabled && !m_fuelCut && m_revLimitTimer == 0) {
+        const double fourPi = m_crankshaft->getCycleLength(); // One engine cycle
         const double advance = getTimingAdvance();
 
         for (int i = 0; i < m_cylinderCount; ++i) {

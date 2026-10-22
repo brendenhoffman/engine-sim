@@ -20,10 +20,11 @@
 //     "BESV" {json}                                   the player's car and engine, every ~3 s
 //
 //   engine-sim -> BeamNG (reply to the sender of BES1)
-//     "BES1" torque_nm, rpm     torque for BeamNG's engine
+//     "BES1" torque_nm, rpm, boost_kpa     torque for BeamNG's engine; manifold pressure above
+//                                         ambient (negative: vacuum) for its boost gauge
 //     "BESN" (same layout)      keep BeamNG's own torque
 //     "BESP" values...          engine profile for retuning the car, ~2 Hz
-//     "BESC" 1, neutral_eq, intake, exhaust   sound settings for the mod, ~2 Hz
+//     "BESC" 1, neutral_eq, intake_level, exhaust_level, profiling   sound settings for the mod, ~2 Hz
 //
 //   engine-sim -> FMOD plugin (port 4571)
 //     "BESF" samples...         mono 44.1 kHz audio
@@ -73,9 +74,9 @@ public:
     double rpmRate(double windowSeconds);
 
     // NaN torque sends "keep BeamNG's torque"
-    void sendTorque(float torqueNm, float rpm);
+    void sendTorque(float torqueNm, float rpm, float boostKpa = 0);
     void sendProfile(const float *values, int count);
-    void sendSoundConfig(bool neutralEq, bool intake, bool exhaust);
+    void sendSoundConfig(bool neutralEq, float intakeLevel, float exhaustLevel, bool profiling, bool gameBurble = true);
     void sendPluginConfig(bool keepGameLowCut);
 
     // Queues audio for the plugin; a sender thread paces it out at 44.1 kHz

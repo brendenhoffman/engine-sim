@@ -188,14 +188,15 @@ bool BridgeTransport::peer(sockaddr_in *out) {
     return m_hasPeer;
 }
 
-void BridgeTransport::sendTorque(float torqueNm, float rpm) {
+void BridgeTransport::sendTorque(float torqueNm, float rpm, float boostKpa) {
     sockaddr_in to;
     if (m_socket < 0 || !peer(&to)) return;
 
-    char buffer[12];
+    char buffer[16];
     std::memcpy(buffer, std::isnan(torqueNm) ? "BESN" : "BES1", 4);
     std::memcpy(buffer + 4, &torqueNm, 4);
     std::memcpy(buffer + 8, &rpm, 4);
+    std::memcpy(buffer + 12, &boostKpa, 4);
     sendto(m_socket, buffer, sizeof(buffer), 0, reinterpret_cast<const sockaddr *>(&to), sizeof(to));
 }
 
@@ -209,11 +210,11 @@ void BridgeTransport::sendProfile(const float *values, int count) {
     sendto(m_socket, buffer, 4 + 4 * count, 0, reinterpret_cast<const sockaddr *>(&to), sizeof(to));
 }
 
-void BridgeTransport::sendSoundConfig(bool neutralEq, bool intake, bool exhaust) {
+void BridgeTransport::sendSoundConfig(bool neutralEq, float intakeLevel, float exhaustLevel, bool profiling, bool gameBurble) {
     sockaddr_in to;
     if (m_socket < 0 || !peer(&to)) return;
 
-    const float values[4] = { 1, neutralEq ? 1.0f : 0.0f, intake ? 1.0f : 0.0f, exhaust ? 1.0f : 0.0f };
+    const float values[6] = { 1, neutralEq ? 1.0f : 0.0f, intakeLevel, exhaustLevel, profiling ? 1.0f : 0.0f, gameBurble ? 1.0f : 0.0f };
     char buffer[4 + sizeof(values)];
     std::memcpy(buffer, "BESC", 4);
     std::memcpy(buffer + 4, values, sizeof(values));

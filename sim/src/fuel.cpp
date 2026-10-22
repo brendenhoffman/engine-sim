@@ -32,6 +32,14 @@ void Fuel::initialize(const Parameters &params) {
     m_maxDilutionEffect = params.maxDilutionEffect;
     m_maxTurbulenceEffect = params.maxTurbulenceEffect;
     m_lowEfficiencyAttenuation = params.lowEfficiencyAttenuation;
+    m_dilutionSensitivity = params.dilutionSensitivity;
+    m_cyclicVariation = params.cyclicVariation;
+}
+
+double Fuel::residualFlameFactor(double residualFraction) const {
+    if (m_dilutionSensitivity <= 0 || residualFraction <= 0) return 1.0;
+    const double reduction = 2.06 * std::pow(residualFraction, 0.77);
+    return std::max(0.0, 1.0 - m_dilutionSensitivity * reduction);
 }
 
 double Fuel::flameSpeed(

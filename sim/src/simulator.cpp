@@ -31,8 +31,9 @@ void Simulator::initialize(const Parameters &params) {
     if (params.systemType == SystemType::NsvOptimized) {
         atg_scs::OptimizedNsvRigidBodySystem *system =
             new atg_scs::OptimizedNsvRigidBodySystem;
-        system->initialize(
-            new atg_scs::GaussSeidelSleSolver);
+        atg_scs::GaussSeidelSleSolver *solver = new atg_scs::GaussSeidelSleSolver;
+        solver->m_maxIterations = params.maxSleSolverSteps;
+        system->initialize(solver);
         m_system = system;
     }
     else {
@@ -127,7 +128,7 @@ bool Simulator::simulateStep() {
     // Wrap into the ring: an angle outside [0, 4pi) (or NaN) made the catch-up loop below spin forever
     const double cycleAngle = outputShaft->getCycleAngle();
     const int index = std::isfinite(cycleAngle)
-        ? ((static_cast<int>(std::floor(DynoTorqueSamples * cycleAngle / (4 * constants::pi))) % DynoTorqueSamples) + DynoTorqueSamples) % DynoTorqueSamples
+        ? ((static_cast<int>(std::floor(DynoTorqueSamples * cycleAngle / outputShaft->getCycleLength())) % DynoTorqueSamples) + DynoTorqueSamples) % DynoTorqueSamples
         : (m_lastDynoTorqueSample < 0 ? 0 : m_lastDynoTorqueSample);
     const int step = m_engine->isSpinningCw() ? 1 : -1;
     m_dynoTorqueSamples[index] = m_dyno.getTorque();
@@ -214,6 +215,7 @@ void Simulator::initializeSynthesizer() {
     synthParams.audioSampleRate = 44100;
     synthParams.inputBufferSize = 44100;
     synthParams.inputChannelCount = m_engine->getExhaustSystemCount();
+    synthParams.voiceCount = m_engine->getCompressorStageCount();
     synthParams.inputSampleRate = static_cast<float>(getSimulationFrequency());
     m_synthesizer.initialize(synthParams);
 }

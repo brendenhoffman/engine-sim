@@ -1,5 +1,9 @@
 
 #include "engine.h"
+#include "forced_induction.h"
+
+#include <algorithm>
+#include <cmath>
 
 #include "constants.h"
 #include "units.h"
@@ -71,6 +75,16 @@ void Engine::initialize(const Parameters &params) {
     m_initialSimulationFrequency = params.initialSimulationFrequency;
     m_initialJitter = params.initialJitter;
     m_initialNoise = params.initialNoise;
+    m_initialConvolution = params.initialConvolution;
+    m_idleRpm = params.idleRpm;
+    m_idleFreeRunning = params.idleFreeRunning;
+    m_fluidSimulationSteps = std::max(1, static_cast<int>(std::lround(params.fluidSimulationSteps)));
+    m_maxSleSolverSteps = std::max(1, static_cast<int>(std::lround(params.maxSleSolverSteps)));
+    m_heatTransferCoefficient = params.heatTransferCoefficient;
+    m_blockTemperature = params.blockTemperature;
+    m_heatTransferReferenceSpeed = params.heatTransferReferenceSpeed;
+    m_pipeResolution = params.pipeResolution;
+    m_realGas = params.realGas;
 
     m_crankshafts = new Crankshaft[m_crankshaftCount];
     m_cylinderBanks = new CylinderBank[m_cylinderBankCount];
@@ -138,6 +152,10 @@ Crankshaft *Engine::getOutputCrankshaft() const {
 
 void Engine::setSpeedControl(double s) {
     m_throttle->setSpeedControl(s);
+}
+
+void Engine::setIdleControlEnabled(bool enabled) {
+    if (m_throttle != nullptr) m_throttle->setIdleControlEnabled(enabled);
 }
 
 double Engine::getSpeedControl() {
@@ -251,6 +269,7 @@ void Engine::calculateDisplacement() {
         for (int i = 0; i < m_cylinderCount; ++i) {
             const Piston &piston = m_pistons[i];
             const CylinderBank &bank = *piston.getCylinderBank();
+            if (bank.isRotor()) continue;
             const ConnectingRod &rod = *piston.getRod();
             const Crankshaft &shaft = *rod.getCrankshaft();
 
@@ -280,6 +299,12 @@ void Engine::calculateDisplacement() {
         const Piston &piston = m_pistons[i];
         const CylinderBank &bank = *piston.getCylinderBank();
 
+        // Rotaries are rated by one face per rotor (a 13B is 2 x 654 cc)
+        if (bank.isRotor()) {
+            if (piston.getCylinderIndex() == 0) displacement += bank.rotorFaceDisplacement();
+            continue;
+        }
+
         if (min_s[i] < max_s[i]) {
             const double r = bank.getBore() / 2.0;
             displacement += constants::pi * r * r * (max_s[i] - min_s[i]);
@@ -287,6 +312,14 @@ void Engine::calculateDisplacement() {
     }
 
     m_displacement = displacement;
+}
+
+int Engine::getCompressorStageCount() const {
+    int n = 0;
+    for (int i = 0; i < m_intakeCount; ++i) {
+        if (const ForcedInduction *fi = m_intakes[i].getForcedInduction()) n += fi->stageCount();
+    }
+    return n;
 }
 
 double Engine::getIntakeFlowRate() const {
@@ -387,10 +420,11 @@ Simulator *Engine::createSimulator(Vehicle *vehicle, Transmission *transmission)
     PistonEngineSimulator *simulator = new PistonEngineSimulator;
     Simulator::Parameters simulatorParams;
     simulatorParams.systemType = Simulator::SystemType::NsvOptimized;
+    simulatorParams.maxSleSolverSteps = m_maxSleSolverSteps;
     simulator->initialize(simulatorParams);
 
     simulator->loadSimulation(this, vehicle, transmission);
-    simulator->setFluidSimulationSteps(8);
+    simulator->setFluidSimulationSteps(m_fluidSimulationSteps);
 
     return static_cast<Simulator *>(simulator);
 }

@@ -22,6 +22,8 @@ class EngineHost;
 //   {"cmd":"retune"}                                   re-profile the engine for BeamNG
 //   {"cmd":"control","ignition":true,"starter":false,"throttle":0.2}
 //   {"cmd":"shutdown"}                                 ask engine-sim to exit
+//   {"cmd":"idle_air","percent":2.5}                 air past the closed throttle (or "reset":true)
+//   {"cmd":"generate"}                                 build and load an engine matching the BeamNG car
 //   {"cmd":"synth","volume":0.8,"convolution":1,...}   engine sound mix (per engine, not saved);
 //                                                      "reset":true goes back to the engine's own
 //
@@ -63,10 +65,23 @@ private:
     nlohmann::json load(const nlohmann::json &request);
     nlohmann::json control(const nlohmann::json &request);
     nlohmann::json synth(const nlohmann::json &request);
+    nlohmann::json generate();
+    void maybeAutoGenerate();
+    nlohmann::json idleAir(const nlohmann::json &request);
+    nlohmann::json buildEngine();
+
+    // Loads a script on the host's owner thread and waits; records it as the saved engine
+    nlohmann::json loadAndRemember(const std::string &script);
     void saveSettings();
 
 private:
     EngineHost *m_host;
+    std::string m_lastAutoCar; // The car the automatic engine was last built for
+
+    // The latest engine build's outcome, shown by the panel however it was started
+    int m_buildId = 0;
+    bool m_buildOk = false;
+    std::string m_buildMessage;
     std::function<void()> m_shutdownHandler;
     std::string m_settingsFile;
 

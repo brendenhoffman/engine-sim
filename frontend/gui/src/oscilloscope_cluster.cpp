@@ -313,10 +313,17 @@ void OscilloscopeCluster::sample() {
     const double cylinderPressure = engine->getChamber(0)->m_system.pressure()
         + engine->getChamber(0)->m_system.dynamicPressure(-1.0, 0.0);
 
+    // The scopes span one engine cycle (720 degrees for four-strokes)
+    const double cycleLength = engine->getCrankshaft(0)->getCycleLength();
+    for (Oscilloscope *scope : { getTotalExhaustFlowOscilloscope(), getExhaustFlowOscilloscope(), getIntakeFlowOscilloscope(),
+             getCylinderMoleculesScope(), getExhaustValveLiftOscilloscope(), getIntakeValveLiftOscilloscope(), getCylinderPressureScope() }) {
+        scope->m_xMax = cycleLength;
+    }
+
     if (m_simulator->getCurrentIteration() % 2 == 0) {
         double cycleAngle = engine->getCrankshaft(0)->getCycleAngle();
         if (!engine->isSpinningCw()) {
-            cycleAngle = 4 * constants::pi - cycleAngle;
+            cycleAngle = engine->getCrankshaft(0)->getCycleLength() - cycleAngle;
         }
 
         getTotalExhaustFlowOscilloscope()->addDataPoint(

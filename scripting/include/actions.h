@@ -16,6 +16,7 @@
 #include "ignition_module_node.h"
 #include "transmission_node.h"
 #include "vehicle_node.h"
+#include "forced_induction_node.h"
 
 namespace es_script {
 
@@ -137,6 +138,46 @@ namespace es_script {
         EngineNode *m_engine = nullptr;
     };
 
+    class AddRotorFaceNode : public Node {
+    public:
+        AddRotorFaceNode() { /* void */ }
+        virtual ~AddRotorFaceNode() { /* void */ }
+
+    protected:
+        virtual void registerInputs() {
+            addInput("exhaust_system", &m_exhaustSystem, InputTarget::Type::Object);
+            addInput("intake", &m_intake, InputTarget::Type::Object);
+            addInput("rotor_housing", &m_cylinderBank, InputTarget::Type::Object);
+            addInput("ignition_wire", &m_ignitionWire, InputTarget::Type::Object);
+            addInput("primary_length", &m_primaryLength);
+            addInput("sound_attenuation", &m_soundAttenuation);
+            addInput("seal_leakage", &m_sealLeakage);
+
+            Node::registerInputs();
+        }
+
+        virtual void _evaluate() {
+            readAllInputs();
+
+            m_cylinderBank->addRotorFace(
+                m_intake,
+                m_exhaustSystem,
+                m_ignitionWire,
+                m_soundAttenuation,
+                m_primaryLength,
+                m_sealLeakage);
+        }
+
+    protected:
+        CylinderBankNode *m_cylinderBank = nullptr;
+        ExhaustSystemNode *m_exhaustSystem = nullptr;
+        IntakeNode *m_intake = nullptr;
+        IgnitionWireNode *m_ignitionWire = nullptr;
+        double m_primaryLength = 0.0;
+        double m_soundAttenuation = 1.0;
+        double m_sealLeakage = 0.0;
+    };
+
     class AddCylinderNode : public Node {
     public:
         AddCylinderNode() { /* void */ }
@@ -182,6 +223,29 @@ namespace es_script {
         IgnitionWireNode *m_ignitionWire = nullptr;
         double m_primaryLength = 0.0;
         double m_soundAttenuation = 1.0;
+    };
+
+    class AddStageNode : public Node {
+    public:
+        AddStageNode() { /* void */ }
+        virtual ~AddStageNode() { /* void */ }
+
+    protected:
+        virtual void registerInputs() {
+            addInput("stage", &m_stage, InputTarget::Type::Object);
+            addInput("forced_induction", &m_forcedInduction, InputTarget::Type::Object);
+
+            Node::registerInputs();
+        }
+
+        virtual void _evaluate() {
+            readAllInputs();
+            m_forcedInduction->addStage(m_stage);
+        }
+
+    protected:
+        CompressorStageNode *m_stage = nullptr;
+        ForcedInductionNode *m_forcedInduction = nullptr;
     };
 
     class AddSampleNode : public Node {
@@ -268,19 +332,20 @@ namespace es_script {
         CylinderBankNode *m_bank = nullptr;
     };
 
-    class k_28inH2ONode : public Node {
-        class k_28inH2ONodeOutput : public piranha::NodeOutput {
+    template <int TestInches>
+    class k_inH2ONode : public Node {
+        class k_inH2ONodeOutput : public piranha::NodeOutput {
         public:
-            k_28inH2ONodeOutput() : NodeOutput(&piranha::FundamentalType::FloatType) {
+            k_inH2ONodeOutput() : NodeOutput(&piranha::FundamentalType::FloatType) {
                 m_input = 0.0;
             }
 
-            virtual ~k_28inH2ONodeOutput() {
+            virtual ~k_inH2ONodeOutput() {
                 /* void */
             }
 
             virtual void fullCompute(void *target) const {
-                *reinterpret_cast<double *>(target) = GasSystem::k_28inH2O(m_input);
+                *reinterpret_cast<double *>(target) = GasSystem::k_inH2O(m_input, TestInches);
             }
 
             double getInput() const { return m_input; }
@@ -291,8 +356,8 @@ namespace es_script {
         };
 
     public:
-        k_28inH2ONode() { /* void */ }
-        virtual ~k_28inH2ONode() { /* void */ }
+        k_inH2ONode() { /* void */ }
+        virtual ~k_inH2ONode() { /* void */ }
 
     protected:
         virtual void registerInputs() {
@@ -314,9 +379,14 @@ namespace es_script {
         }
 
     protected:
-        k_28inH2ONodeOutput m_output;
+        k_inH2ONodeOutput m_output;
         double m_flowInput = 0.0;
     };
+
+    // Flow bench ratings at 28, 30 and 32 inches of water
+    using k_28inH2ONode = k_inH2ONode<28>;
+    using k_30inH2ONode = k_inH2ONode<30>;
+    using k_32inH2ONode = k_inH2ONode<32>;
 
     class k_CarbNode : public Node {
         class k_CarbNodeOutput : public piranha::NodeOutput {
@@ -429,6 +499,7 @@ namespace es_script {
             addInput("gamma", &m_gamma);
             addInput("lift", &m_lift);
             addInput("steps", &m_steps);
+            addInput("cycle_angle", &m_cycleAngle);
             addInput("function", &m_function, InputTarget::Type::Object);
 
             Node::registerInputs();
@@ -437,7 +508,8 @@ namespace es_script {
         virtual void _evaluate() {
             readAllInputs();
 
-            const double angle = m_durationAt50Thou / 4;
+            // Half the duration, from crank degrees to cam angle (the cam turns once per cycle)
+            const double angle = m_durationAt50Thou * constants::pi / m_cycleAngle;
             const double s = std::pow(2 * units::distance(50, units::thou) / m_lift, 1 / m_gamma) - 1;
             const double k = std::acos(s) / angle;
             const double extents = constants::pi / k;
@@ -466,6 +538,57 @@ namespace es_script {
         double m_durationAt50Thou = 0.0;
         double m_gamma = 1.0;
         double m_lift = 300.0;
+        int m_steps = 100;
+        double m_cycleAngle = 4 * constants::pi;
+        FunctionNode *m_function = nullptr;
+    };
+
+    // How far open a port is (0 to 1) around its centre, as a cam lobe profile: ports opened
+    // by a rotor flank or a piston crown work like a cam that turns once per cycle. `duration`
+    // is from first crack to fully shut and `ramp` how long opening (and closing) takes, both
+    // in crank degrees.
+    class GeneratePortLobeNode : public Node {
+    public:
+        GeneratePortLobeNode() { /* void */ }
+        virtual ~GeneratePortLobeNode() { /* void */ }
+
+    protected:
+        virtual void registerInputs() {
+            addInput("duration", &m_duration);
+            addInput("ramp", &m_ramp);
+            addInput("cycle_angle", &m_cycleAngle);
+            addInput("steps", &m_steps);
+            addInput("function", &m_function, InputTarget::Type::Object);
+
+            Node::registerInputs();
+        }
+
+        virtual void _evaluate() {
+            readAllInputs();
+
+            const double toCam = 2 * constants::pi / m_cycleAngle;
+            const double half = 0.5 * m_duration;
+            const double ramp = std::max(1e-6, std::min(m_ramp, half));
+            const double extents = half * 1.1;
+            const int steps = std::max(m_steps, 8);
+            const double step = extents / (steps - 1);
+
+            for (int i = 0; i < steps; ++i) {
+                const double x = i * step; // crank angle from the centre
+                double open = 0;
+                if (x < half - ramp) open = 1;
+                else if (x < half) open = 0.5 - 0.5 * std::cos(constants::pi * (half - x) / ramp);
+
+                m_function->addSample(x * toCam, open);
+                if (i > 0) m_function->addSample(-x * toCam, open);
+            }
+            m_function->setFilterRadius(step * toCam);
+        }
+
+    protected:
+        double m_duration = 0.0;
+        double m_ramp = 0.0;
+        double m_cycleAngle = 4 * constants::pi;
         int m_steps = 100;
         FunctionNode *m_function = nullptr;
     };

@@ -510,6 +510,9 @@ void EngineSimApplication::configure(const ApplicationSettings &settings) {
 
 void EngineSimApplication::createObjects(Engine *engine) {
     for (int i = 0; i < engine->getCylinderCount(); ++i) {
+        // Rotor faces have no rod or piston to draw (rotaries aren't drawn yet)
+        if (engine->getPiston(i)->getCylinderBank()->isRotor()) continue;
+
         ConnectingRodObject *rodObject = new ConnectingRodObject;
         rodObject->initialize(this);
         rodObject->m_connectingRod = engine->getConnectingRod(i);
@@ -534,6 +537,8 @@ void EngineSimApplication::createObjects(Engine *engine) {
     }
 
     for (int i = 0; i < engine->getCylinderBankCount(); ++i) {
+        if (engine->getCylinderBank(i)->isRotor()) continue;
+
         CylinderBankObject *cbObject = new CylinderBankObject;
         cbObject->initialize(this);
         cbObject->m_bank = engine->getCylinderBank(i);

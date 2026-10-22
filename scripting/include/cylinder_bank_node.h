@@ -11,6 +11,7 @@
 
 #include "engine_sim.h"
 
+#include <cmath>
 #include <map>
 #include <vector>
 
@@ -26,6 +27,10 @@ namespace es_script {
             ExhaustSystemNode *exhaust;
             double soundAttenuation;
             double primaryLength;
+
+            // Rotor faces have no piston, rod or journal
+            bool rotorFace = false;
+            double sealLeakage = 0; // Apex/side seal leakage, as a flow constant like piston blowby
         };
 
     public:
@@ -35,6 +40,7 @@ namespace es_script {
         void connectRodAssemblies(EngineContext *context) const {
             const int n = getCylinderCount();
             for (int i = 0; i < n; ++i) {
+                if (m_cylinders[i].rotorFace) continue;
                 ConnectingRodNode *rodNode = m_cylinders[i].rod;
                 ConnectingRod *rod = context->getConnectingRod(rodNode);
 
@@ -49,6 +55,7 @@ namespace es_script {
         void indexSlaveJournals(EngineContext *context) const {
             const int n = getCylinderCount();
             for (int i = 0; i < n; ++i) {
+                if (m_cylinders[i].rotorFace) continue;
                 m_cylinders[i].rod->indexSlaveJournals(context);
             }
         }
@@ -65,12 +72,36 @@ namespace es_script {
             params.cylinderCount = static_cast<int>(m_cylinders.size());
             params.index = index;
             params.crankshaft = crankshaft;
+            params.rotorGeneratingRadius = m_rotorRadius;
+            params.rotorEccentricity = m_rotorEccentricity;
+            params.rotorWidth = m_rotorWidth;
+            params.rotorPhase = m_rotorPhase;
+            params.sparkPlugs = static_cast<int>(std::lround(m_sparkPlugs));
+            params.trailingDelay = m_trailingDelay;
+            if (m_rotorEccentricity > 0) {
+                // Drawn (and sized, where something needs one) as if the width were a bore
+                params.bore = m_rotorWidth;
+                params.deckHeight = m_rotorRadius;
+            }
 
             cylinderBank->initialize(params);
 
             const int n = getCylinderCount();
             for (int i = 0; i < n; ++i) {
                 Piston *piston = engine->getPiston(cylinderBaseIndex + i);
+
+                if (m_cylinders[i].rotorFace) {
+                    context->setCylinderIndex(this, i, cylinderBaseIndex + i);
+
+                    Piston::Parameters face{};
+                    face.Rod = nullptr;
+                    face.Bank = cylinderBank;
+                    face.CylinderIndex = i;
+                    face.BlowbyFlowCoefficient = m_cylinders[i].sealLeakage;
+                    piston->initialize(face);
+                    continue;
+                }
+
                 ConnectingRod *rod = engine->getConnectingRod(cylinderBaseIndex + i);
                 Crankshaft *crankshaft = context->getCrankshaft(m_cylinders[i].rodJournal->getCrankshaft());
 
@@ -134,6 +165,26 @@ namespace es_script {
             wire->connect(this, getCylinderCount() - 1);
         }
 
+        void addRotorFace(
+            IntakeNode *intake,
+            ExhaustSystemNode *exhaust,
+            IgnitionWireNode *wire,
+            double soundAttenuation,
+            double primaryLength,
+            double sealLeakage)
+        {
+            Cylinder face{};
+            face.intake = intake;
+            face.exhaust = exhaust;
+            face.soundAttenuation = soundAttenuation;
+            face.primaryLength = primaryLength;
+            face.rotorFace = true;
+            face.sealLeakage = sealLeakage;
+            m_cylinders.push_back(face);
+
+            wire->connect(this, getCylinderCount() - 1);
+        }
+
         const Cylinder &getCylinder(int i) const {
             return m_cylinders[i];
         }
@@ -158,6 +209,12 @@ namespace es_script {
             addInput("position_x", &m_parameters.positionX);
             addInput("position_y", &m_parameters.positionY);
             addInput("display_depth", &m_parameters.displayDepth);
+            addInput("rotor_radius", &m_rotorRadius);
+            addInput("rotor_eccentricity", &m_rotorEccentricity);
+            addInput("rotor_width", &m_rotorWidth);
+            addInput("rotor_phase", &m_rotorPhase);
+            addInput("spark_plugs", &m_sparkPlugs);
+            addInput("trailing_delay", &m_trailingDelay);
 
             ObjectReferenceNode<CylinderBankNode>::registerInputs();
         }
@@ -175,6 +232,14 @@ namespace es_script {
         CylinderBank::Parameters m_parameters;
         std::vector<Cylinder> m_cylinders;
         CylinderHeadNode *m_head = nullptr;
+
+        // Rotor housing (eccentricity > 0)
+        double m_rotorRadius = 0;
+        double m_rotorEccentricity = 0;
+        double m_rotorWidth = 0;
+        double m_rotorPhase = 0;
+        double m_sparkPlugs = 1;
+        double m_trailingDelay = 0;
     };
 
 } /* namespace es_script */

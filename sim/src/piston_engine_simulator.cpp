@@ -1,4 +1,5 @@
 #include "piston_engine_simulator.h"
+#include "forced_induction.h"
 
 #include "constants.h"
 #include "units.h"
@@ -110,6 +111,11 @@ void PistonEngineSimulator::loadSimulation(Engine *engine, Vehicle *vehicle, Tra
         ConnectingRod *connectingRod = piston->getRod();
 
         CylinderBank *bank = piston->getCylinderBank();
+        if (bank->isRotor()) {
+            // Rotor faces have no piston or rod to simulate; the chamber turns the shaft
+            m_system->addForceGenerator(m_engine->getChamber(i));
+            continue;
+        }
         const double dx = std::cos(bank->getAngle() + constants::pi / 2);
         const double dy = std::sin(bank->getAngle() + constants::pi / 2);
 
@@ -175,6 +181,13 @@ void PistonEngineSimulator::loadSimulation(Engine *engine, Vehicle *vehicle, Tra
     m_dyno.connectCrankshaft(m_engine->getOutputCrankshaft());
     m_system->addConstraint(&m_dyno);
 
+    m_crankTorque.connect(&m_engine->getOutputCrankshaft()->m_body);
+    m_crankTorque.torque = 0;
+    m_system->addForceGenerator(&m_crankTorque);
+    m_accessoryTorque.connect(&m_engine->getOutputCrankshaft()->m_body);
+    m_accessoryTorque.torque = 0;
+    m_system->addForceGenerator(&m_accessoryTorque);
+
     m_starterMotor.connectCrankshaft(m_engine->getOutputCrankshaft());
     m_starterMotor.m_maxTorque = m_engine->getStarterTorque();
     m_starterMotor.m_rotationSpeed = -m_engine->getStarterSpeed();
@@ -196,6 +209,7 @@ double PistonEngineSimulator::getAverageOutputSignal() const {
 void PistonEngineSimulator::placeAndInitialize() {
     const int cylinderCount = m_engine->getCylinderCount();
     for (int i = 0; i < cylinderCount; ++i) {
+        if (m_engine->getPiston(i)->getCylinderBank()->isRotor()) continue;
         ConnectingRod *rod = m_engine->getConnectingRod(i);
 
         if (rod->getRodJournalCount() != 0) {
@@ -204,6 +218,7 @@ void PistonEngineSimulator::placeAndInitialize() {
     }
 
     for (int i = 0; i < cylinderCount; ++i) {
+        if (m_engine->getPiston(i)->getCylinderBank()->isRotor()) continue;
         placeCylinder(i);
     }
 
@@ -217,17 +232,25 @@ void PistonEngineSimulator::placeAndInitialize() {
         Piston *piston = m_engine->getChamber(i)->getPiston();
         CylinderHead *head = m_engine->getChamber(i)->getCylinderHead();
         ExhaustSystem *exhaust = head->getExhaustSystem(piston->getCylinderIndex());
-        const double exhaustLength =
-            head->getHeaderPrimaryLength(piston->getCylinderIndex())
-            + exhaust->getLength();
+        const double exhaustLength = m_engine->getChamber(i)->exhaustSoundPathLength();
         const double speedOfSound = 343.0 * units::m / units::sec;
         const double delay = exhaustLength / speedOfSound;
         m_delayFilters[i].initialize(delay, 10000.0);
     }
 
+    // Every volume and pipe has to share a gas model: a mole crossing between two models would
+    // change temperature on the way
+    if (m_engine->getRealGas()) {
+        const GasSystem::Properties *real = &GasSystem::Properties::Real;
+        for (int i = 0; i < cylinderCount; ++i) m_engine->getChamber(i)->setGasProperties(real);
+        for (int i = 0; i < m_engine->getIntakeCount(); ++i) m_engine->getIntake(i)->setGasProperties(real);
+        for (int i = 0; i < m_engine->getExhaustSystemCount(); ++i) m_engine->getExhaustSystem(i)->setGasProperties(real);
+    }
+
     m_engine->getIgnitionModule()->reset();
 
-    m_exhaustFlowStagingBuffer = new double[m_engine->getExhaustSystemCount()];
+    m_exhaustFlowStagingBuffer = new double[m_engine->getExhaustSystemCount()
+        + Synthesizer::VoiceInputs * m_engine->getCompressorStageCount()];
 }
 
 void PistonEngineSimulator::placeCylinder(int i) {
@@ -301,7 +324,16 @@ void PistonEngineSimulator::simulateStep_() {
     const int exhaustSystemCount = m_engine->getExhaustSystemCount();
     const int intakeCount = m_engine->getIntakeCount();
     const double fluidTimestep = timestep / m_fluidSimulationSteps;
+    double accessoryLoad = 0;
     for (int i = 0; i < m_fluidSimulationSteps; ++i) {
+        for (int j = 0; j < intakeCount; ++j) {
+            Intake *intake = m_engine->getIntake(j);
+            if (ForcedInduction *fi = intake->getForcedInduction()) {
+                fi->process(fluidTimestep, m_engine, intake);
+                accessoryLoad += fi->crankLoad();
+            }
+        }
+
         for (int j = 0; j < exhaustSystemCount; ++j) {
             m_engine->getExhaustSystem(j)->process(fluidTimestep);
         }
@@ -317,6 +349,10 @@ void PistonEngineSimulator::simulateStep_() {
     }
 
     im->resetIgnitionEvents();
+
+    // Superchargers' drag, against the crank's rotation, on the next step
+    const double crankSpeed = m_engine->getOutputCrankshaft()->m_body.v_theta;
+    m_accessoryTorque.torque = (crankSpeed > 0 ? -1.0 : 1.0) * accessoryLoad / m_fluidSimulationSteps;
 }
 
 double PistonEngineSimulator::getTotalExhaustFlow() const {
@@ -393,11 +429,7 @@ void PistonEngineSimulator::writeToSynthesizer() {
             head->getHeaderPrimaryLength(piston->getCylinderIndex())
             + exhaust->getLength();
 
-        double exhaustFlow =
-            attenuation_3 * 1600 * (
-                1.0 * (chamber->m_exhaustRunnerAndPrimary.pressure() - units::pressure(1.0, units::atm))
-                + 0.1 * chamber->m_exhaustRunnerAndPrimary.dynamicPressure(1.0, 0.0)
-                + 0.1 * chamber->m_exhaustRunnerAndPrimary.dynamicPressure(-1.0, 0.0));
+        double exhaustFlow = attenuation_3 * 1600 * chamber->exhaustSoundSignal();
 
         const double delayedExhaustPulse =
             m_delayFilters[i].fast_f(exhaustFlow);
@@ -409,5 +441,25 @@ void PistonEngineSimulator::writeToSynthesizer() {
             * (1 / (exhaustLength * exhaustLength));
     }
 
+    // Turbo and supercharger voices
+    double *voice = m_exhaustFlowStagingBuffer + exhaustSystemCount;
+    for (int i = 0; i < m_engine->getIntakeCount(); ++i) {
+        const ForcedInduction *fi = m_engine->getIntake(i)->getForcedInduction();
+        if (fi == nullptr) continue;
+        for (int j = 0; j < fi->stageCount(); ++j) {
+            const ForcedInduction::Voice v = fi->voice(j);
+            voice[0] = v.frequency;
+            voice[1] = v.whine;
+            voice[2] = v.hiss;
+            voice[3] = v.flutter;
+            voice[4] = v.bov;
+            voice[5] = v.wastegate;
+            voice[6] = v.gearFrequency;
+            voice[7] = v.gear;
+            voice += Synthesizer::VoiceInputs;
+        }
+    }
+
     synthesizer().writeInput(m_exhaustFlowStagingBuffer);
+    synthesizer().setLevelerHold(m_starterMotor.m_enabled || std::abs(m_engine->getRpm()) < 300);
 }

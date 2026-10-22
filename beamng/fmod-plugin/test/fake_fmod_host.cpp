@@ -163,10 +163,6 @@ int main(int argc, char **argv) {
     check(g_addedToGroup == group && g_addedIndex == FMOD_CHANNELCONTROL_DSP_HEAD, "DSP added at the head of the marker's group");
     if (g_createdDescription == nullptr) return 1;
 
-    // Feed audio like engine-sim does, then pull it through the DSP at a 48 kHz mixer rate
-    std::thread sender(sendSine, 0.6, 440.0, 0.5f);
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));
-
     FmodDspStateFunctions functions{};
     functions.getsamplerate = sampleRate48k;
     FmodDspState state{};
@@ -183,11 +179,64 @@ int main(int argc, char **argv) {
     FmodDspBufferArray in{ 1, &inChannels, &inMask, inBuffers, 0 };
     FmodDspBufferArray out{ 1, &outChannels, &outMask, outBuffers, 0 };
 
+    // The DSP is already waiting when the first, tiny packet of the session arrives (what happens
+    // after a tuning sweep): it must not read before the start of the stream
+    {
+        const int fd = socket(AF_INET, SOCK_DGRAM, 0);
+        sockaddr_in to{};
+        to.sin_family = AF_INET;
+        const char *portOverride = std::getenv("ENGINE_SIM_AUDIO_PORT");
+        to.sin_port = htons(portOverride != nullptr ? std::atoi(portOverride) : 4571);
+        to.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        char packet[4 + 4 * 100];
+        std::memcpy(packet, "BESF", 4);
+        const float quiet = 0.1f;
+        for (int i = 0; i < 100; ++i) std::memcpy(packet + 4 + 4 * i, &quiet, 4);
+        sendto(fd, packet, sizeof(packet), 0, reinterpret_cast<sockaddr *>(&to), sizeof(to));
+        close(fd);
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    bool allFinite = true;
+    for (int block = 0; block < 4; ++block) {
+        g_createdDescription->process(&state, length, &in, &out, 0, FMOD_DSP_PROCESS_PERFORM);
+        for (float v : output) allFinite = allFinite && std::isfinite(v) && std::fabs(v) <= 1.0f;
+    }
+    check(allFinite, "first tiny packet of a session gives clean output");
+    check(output[0] == 0.25f, "passes the game's sound through until enough audio has arrived");
+
+    // Feed audio like engine-sim does, then pull it through the DSP at a 48 kHz mixer rate
+    std::thread sender(sendSine, 0.6, 440.0, 0.5f);
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
     g_createdDescription->process(&state, length, &in, &out, 0, FMOD_DSP_PROCESS_PERFORM);
     float peak = 0;
     for (float v : output) peak = std::fmax(peak, std::fabs(v));
     check(peak > 0.4f && peak < 0.6f, "plays engine-sim audio while it's arriving");
     check(output[0] == output[1], "same signal on every channel");
+
+    // A second copy of the sound (BeamNG plays the stream from several emitters) renders the
+    // same samples as the first in every mix block, so the copies can't drift out of phase
+    {
+        FmodDspState second{};
+        second.functions = &functions;
+        g_createdDescription->create(&second);
+        std::vector<float> output2(length * channels, 0.0f);
+        float *outBuffers2[] = { output2.data() };
+        FmodDspBufferArray out2{ 1, &outChannels, &outMask, outBuffers2, 0 };
+
+        bool same = true, moving = false;
+        std::vector<float> previous;
+        for (int block = 0; block < 6; ++block) {
+            g_createdDescription->process(&state, length, &in, &out, 0, FMOD_DSP_PROCESS_PERFORM);
+            g_createdDescription->process(&second, length, &in, &out2, 0, FMOD_DSP_PROCESS_PERFORM);
+            same = same && output == output2;
+            moving = moving || (!previous.empty() && previous != output);
+            previous = output;
+        }
+        check(same, "two copies of the sound play identical samples in each mix block");
+        check(moving, "and the shared stream moves on from block to block");
+        g_createdDescription->release(&second);
+    }
 
     sender.join();
     std::this_thread::sleep_for(std::chrono::milliseconds(400));

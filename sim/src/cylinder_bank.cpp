@@ -35,6 +35,36 @@ void CylinderBank::initialize(const Parameters &params) {
     m_displayDepth = params.displayDepth;
 
     m_index = params.index;
+
+    m_rotorGeneratingRadius = params.rotorGeneratingRadius;
+    m_rotorEccentricity = params.rotorEccentricity;
+    m_rotorWidth = params.rotorWidth;
+    m_rotorPhase = params.rotorPhase;
+    m_sparkPlugs = params.sparkPlugs < 1 ? 1 : params.sparkPlugs;
+    m_trailingDelay = params.trailingDelay;
+}
+
+double CylinderBank::rotorFaceDisplacement() const {
+    return 3 * std::sqrt(3.0) * m_rotorEccentricity * m_rotorGeneratingRadius * m_rotorWidth;
+}
+
+double CylinderBank::rotorFlankLength() const {
+    return std::sqrt(3.0) * m_rotorGeneratingRadius;
+}
+
+double CylinderBank::rotorFaceTdc(int face) const {
+    // The faces follow each other a third of a rotor turn (a full shaft turn) apart
+    return m_rotorPhase + face * 2 * constants::pi;
+}
+
+double CylinderBank::rotorFaceSweptVolume(int face, double cycleAngle) const {
+    const double phi = cycleAngle - rotorFaceTdc(face);
+    return 0.5 * rotorFaceDisplacement() * (1 - std::cos(2 * phi / 3));
+}
+
+double CylinderBank::rotorFaceVolumeDerivative(int face, double cycleAngle) const {
+    const double phi = cycleAngle - rotorFaceTdc(face);
+    return rotorFaceDisplacement() / 3 * std::sin(2 * phi / 3);
 }
 
 void CylinderBank::destroy() {

@@ -36,6 +36,11 @@ namespace es_script {
     protected:
         virtual void registerInputs() override {
             addInput("gamma", &m_parameters.gamma);
+            addInput("idle_speed", &m_parameters.idleSpeed);
+            addInput("idle_max_opening", &m_parameters.idleMaxOpening);
+            addInput("idle_proportional", &m_parameters.idleProportional);
+            addInput("idle_integral", &m_parameters.idleIntegral);
+            addInput("idle_fuel_cut", &m_parameters.idleFuelCutRatio);
 
             ThrottleNode::registerInputs();
         }

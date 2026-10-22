@@ -36,7 +36,8 @@ class Camshaft : public Part {
         double valveLift(int lobe) const;
         double sampleLobe(double theta) const;
 
-        void setLobeCenterline(int lobe, double crankAngle) { m_lobeAngles[lobe] = crankAngle / 2; }
+        // Crank angle within the engine cycle; the cam turns once per cycle
+        void setLobeCenterline(int lobe, double crankAngle);
         double getLobeCenterline(int lobe) const { return m_lobeAngles[lobe]; }
 
         double getAngle() const;

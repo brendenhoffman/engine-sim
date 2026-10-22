@@ -18,5 +18,6 @@
 #include "throttle.h"
 #include "direct_throttle_linkage.h"
 #include "governor.h"
+#include "forced_induction.h"
 
 #endif /* ATG_ENGINE_SIM_ENGINE_SIM_H */

@@ -21,6 +21,7 @@ class LevelingFilter : public Filter {
         float p_maxLevel;
         float p_minLevel;
         float p_target;
+        float p_peakDecay = 0.999f; // Per sample; the level it normalizes to falls this fast
 };
 
 #endif /* ATG_ENGINE_SIM_LEVELING_FILTER_H */

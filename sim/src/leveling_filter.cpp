@@ -15,7 +15,7 @@ LevelingFilter::~LevelingFilter() {
 }
 
 float LevelingFilter::f(float sample) {
-    m_peak = 0.999f * m_peak;
+    m_peak = p_peakDecay * m_peak;
     if (std::abs(sample) > m_peak) {
         m_peak = std::abs(sample);
     }

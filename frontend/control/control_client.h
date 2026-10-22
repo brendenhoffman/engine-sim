@@ -49,6 +49,7 @@ private:
     std::string m_socketPath;
     int m_fd = -1;
     std::string m_readBuffer;
+    int m_lastBuildId = 0;
 
     std::atomic<bool> m_running{true};
     std::thread m_thread;

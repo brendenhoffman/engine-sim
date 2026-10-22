@@ -1,0 +1,393 @@
+// Kawasaki Ninja H2 [I4, supercharged]: 998 cc, 76 x 55 mm, 8.5:1, a centrifugal
+// supercharger geared 9.2:1 to the crank (its 69 mm impeller turns 130,000 rpm at the 14,000
+// rpm limit). About 230 hp at 11,000 rpm and 142 Nm at 10,500. No intercooler and no blow-off
+// valve: shut the throttle on boost and the compressor surges, the H2's chirp.
+// Built from the Hayabusa script that ships with engine-sim (atg-video-1/04_hayabusa.mr).
+
+import "engine_sim.mr"
+
+units units()
+constants constants()
+impulse_response_library ir_lib()
+label cycle(2 * 360 * units.deg)
+
+private node wires {
+    output wire1: ignition_wire();
+    output wire2: ignition_wire();
+    output wire3: ignition_wire();
+    output wire4: ignition_wire();
+}
+
+private node h2_head {
+    input intake_camshaft;
+    input exhaust_camshaft;
+    input chamber_volume: 33.3 * units.cc;   // 8.5:1
+    input intake_runner_volume: 149.6 * units.cc;
+    input intake_runner_cross_section_area: 10.0 * units.cm2 * 2.0;
+    input exhaust_runner_volume: 50.0 * units.cc;
+    input exhaust_runner_cross_section_area: 15.0 * units.cm2 * 2.0;
+
+    input flow_attenuation: 1.0;
+    input lift_scale: 1.0;
+    input flip_display: false;
+    alias output __out: head;
+
+    function intake_flow(50 * units.thou)
+    intake_flow
+        .add_flow_sample(0 * lift_scale, 0 * flow_attenuation)
+        .add_flow_sample(50 * lift_scale, 40 * flow_attenuation)
+        .add_flow_sample(100 * lift_scale, 80 * flow_attenuation)
+        .add_flow_sample(150 * lift_scale, 125 * flow_attenuation)
+        .add_flow_sample(200 * lift_scale, 160 * flow_attenuation)
+        .add_flow_sample(250 * lift_scale, 190 * flow_attenuation)
+        .add_flow_sample(300 * lift_scale, 210 * flow_attenuation)
+        .add_flow_sample(350 * lift_scale, 225 * flow_attenuation)
+        .add_flow_sample(400 * lift_scale, 230 * flow_attenuation)
+        .add_flow_sample(450 * lift_scale, 240 * flow_attenuation)
+
+    function exhaust_flow(50 * units.thou)
+    exhaust_flow
+        .add_flow_sample(0 * lift_scale, 0 * flow_attenuation)
+        .add_flow_sample(50 * lift_scale, 30 * flow_attenuation)
+        .add_flow_sample(100 * lift_scale, 70 * flow_attenuation)
+        .add_flow_sample(150 * lift_scale, 100 * flow_attenuation)
+        .add_flow_sample(200 * lift_scale, 125 * flow_attenuation)
+        .add_flow_sample(250 * lift_scale, 140 * flow_attenuation)
+        .add_flow_sample(300 * lift_scale, 150 * flow_attenuation)
+        .add_flow_sample(350 * lift_scale, 160 * flow_attenuation)
+        .add_flow_sample(400 * lift_scale, 165 * flow_attenuation)
+        .add_flow_sample(450 * lift_scale, 170 * flow_attenuation)
+
+    cylinder_head head(
+        chamber_volume: chamber_volume,
+        intake_runner_volume: intake_runner_volume,
+        intake_runner_cross_section_area: intake_runner_cross_section_area,
+        exhaust_runner_volume: exhaust_runner_volume,
+        exhaust_runner_cross_section_area: exhaust_runner_cross_section_area,
+
+        intake_port_flow: intake_flow,
+        exhaust_port_flow: exhaust_flow,
+        intake_camshaft: intake_camshaft,
+        exhaust_camshaft: exhaust_camshaft,
+        flip_display: flip_display
+    )
+}
+
+private node h2_camshaft {
+    input lobe_profile;
+    input intake_lobe_profile: lobe_profile;
+    input exhaust_lobe_profile: lobe_profile;
+    input lobe_separation: 114 * units.deg;
+    input intake_lobe_center: lobe_separation;
+    input exhaust_lobe_center: lobe_separation;
+    input advance: 0 * units.deg; 
+    input base_radius: 0.75 * units.inch;
+
+    output intake_cam_0: _intake_cam_0;
+    output exhaust_cam_0: _exhaust_cam_0;
+
+    camshaft_parameters params (
+        advance: advance,
+        base_radius: base_radius
+    )
+
+    camshaft _intake_cam_0(params, lobe_profile: intake_lobe_profile)
+    camshaft _exhaust_cam_0(params, lobe_profile: exhaust_lobe_profile)
+
+    label rot180(180 * units.deg)
+    label rot360(360 * units.deg)
+
+    _exhaust_cam_0
+        .add_lobe(rot360 - exhaust_lobe_center + (0.0 / 4) * cycle)
+        .add_lobe(rot360 - exhaust_lobe_center + (1.0 / 4) * cycle)
+        .add_lobe(rot360 - exhaust_lobe_center + (3.0 / 4) * cycle)
+        .add_lobe(rot360 - exhaust_lobe_center + (2.0 / 4) * cycle)
+    _intake_cam_0
+        .add_lobe(rot360 + intake_lobe_center + (0.0 / 4) * cycle)
+        .add_lobe(rot360 + intake_lobe_center + (1.0 / 4) * cycle)
+        .add_lobe(rot360 + intake_lobe_center + (3.0 / 4) * cycle)
+        .add_lobe(rot360 + intake_lobe_center + (2.0 / 4) * cycle)
+}
+
+public node ninja_h2 {
+    alias output __out: engine;
+
+    engine engine(
+        name: "Kawasaki Ninja H2 [I4 supercharged]",
+        starter_torque: 70 * units.lb_ft,
+        starter_speed: 500 * units.rpm,
+        redline: 14000 * units.rpm,
+        real_gas: 1,                        // Real gas heat capacities
+        idle_speed: 1100 * units.rpm,
+        idle_fuel_cut: 1.5,
+        idle_rpm: 1100 * units.rpm,
+        fuel: fuel(
+            max_turbulence_effect: 5.5,
+            max_dilution_effect: 1000.0,
+            max_burning_efficiency: 1.0,    // Calibrated to the real engine's torque
+            burning_efficiency_randomness: 0.0,
+            turbulence_to_flame_speed_ratio: h2_flame()
+        ),
+        throttle_gamma: 2.0,
+        hf_gain: 0.00407,
+        noise: 0.292,
+        jitter: 0.062,
+        simulation_frequency: 20000
+    )
+
+    wires wires()
+
+    label stroke(55 * units.mm)
+    label bore(76 * units.mm)
+    label rod_length(104 * units.mm)
+    label compression_height(0.9 * units.inch)
+
+    crankshaft c0(
+        throw: stroke / 2,
+        flywheel_mass: 10 * units.lb,
+        mass: 24.8 * units.lb,
+        friction_torque: 1.0 * units.lb_ft,
+        moment_of_inertia: 0.22986844776863666 * 0.2,
+        position_x: 0.0,
+        position_y: 0.0,
+        tdc: 90 * units.deg
+    )
+
+    rod_journal rj0(angle: 0.0 * units.deg)
+    rod_journal rj1(angle: 180.0 * units.deg)
+    rod_journal rj2(angle: 180.0 * units.deg)
+    rod_journal rj3(angle: 0.0 * units.deg)
+    c0
+        .add_rod_journal(rj0)
+        .add_rod_journal(rj1)
+        .add_rod_journal(rj2)
+        .add_rod_journal(rj3)
+
+    piston_parameters piston_params(
+        mass: 220 * units.g,
+        compression_height: compression_height,
+        wrist_pin_position: 0.0,
+        displacement: 0.0
+    )
+
+    connecting_rod_parameters cr_params(
+        mass: 300 * units.g,
+        moment_of_inertia: 0.0015884918028487504,
+        center_of_mass: 0.0,
+        length: rod_length
+    )
+
+    // Four throttle bodies after the supercharger's pressure chamber
+    intake intake(
+        plenum_volume: 1.0 * units.L,
+        plenum_cross_section_area: 20.0 * units.cm2,
+        intake_flow_rate: k_carb(700.0),
+        runner_flow_rate: k_carb(300.0),
+        runner_length: 10.0 * units.inch,
+        idle_flow_rate: k_carb(0.0),
+        idle_throttle_plate_position: 0.998,
+        velocity_decay: 0.5
+    )
+
+    exhaust_system_parameters es_params(
+        outlet_flow_rate: k_carb(1000.0),
+        primary_tube_length: 40.0 * units.inch,
+        primary_flow_rate: k_carb(500.0),
+        velocity_decay: 1.0,
+        volume: 10.0 * units.L
+    )
+
+    exhaust_system exhaust0(
+        es_params,
+        audio_volume: 1.0 * 0.25,
+        impulse_response: ir_lib.minimal_muffling_03
+    )
+
+    exhaust_system exhaust1(
+        es_params,
+        audio_volume: 2.0 * 0.25,
+        impulse_response: ir_lib.minimal_muffling_03
+    )
+
+    forced_induction supercharger(
+        intake: intake,
+        exhaust_system: exhaust0,
+        charge_volume: 3.5 * units.L,      // The pressure chamber
+        intercooler: 0.0,
+        whine_volume: 1.2
+    )
+    supercharger.add_stage(
+        supercharger(
+            compressor_radius: 34.5 * units.mm,
+            compressor_flow: 0.22 * units.kg / units.sec,
+            drive_ratio: 9.18,
+            max_speed: 130000 * units.rpm,
+            duct_length: 0.4 * units.m,
+            duct_area: 25 * units.cm2,
+            whine_order: 1.5,
+            gear_order: 24.0,               // Its step-up gears' mesh
+            gear_volume: 0.4
+        )
+    )
+
+    cylinder_bank_parameters bank_params(
+        bore: bore,
+        deck_height: stroke / 2 + rod_length + compression_height
+    )
+
+    cylinder_bank b0(bank_params, angle: 0.0 * units.deg)
+    b0
+        .add_cylinder(
+            piston: piston(piston_params, blowby: k_28inH2O(0.001)),
+            connecting_rod: connecting_rod(cr_params),
+            rod_journal: rj0,
+            intake: intake,
+            exhaust_system: exhaust0,
+            ignition_wire: wires.wire1,
+            sound_attenuation: 0.9
+        )
+        .add_cylinder(
+            piston: piston(piston_params, blowby: k_28inH2O(0.002)),
+            connecting_rod: connecting_rod(cr_params),
+            rod_journal: rj1,
+            intake: intake,
+            exhaust_system: exhaust1,
+            ignition_wire: wires.wire2,
+            sound_attenuation: 0.8
+        )
+        .add_cylinder(
+            piston: piston(piston_params, blowby: k_28inH2O(0.001)),
+            connecting_rod: connecting_rod(cr_params),
+            rod_journal: rj2,
+            intake: intake,
+            exhaust_system: exhaust0,
+            ignition_wire: wires.wire3,
+            sound_attenuation: 1.1
+        )
+        .add_cylinder(
+            piston: piston(piston_params, blowby: k_28inH2O(0.002)),
+            connecting_rod: connecting_rod(cr_params),
+            rod_journal: rj3,
+            intake: intake,
+            exhaust_system: exhaust1,
+            ignition_wire: wires.wire4,
+            sound_attenuation: 0.9
+        )
+
+    engine
+        .add_cylinder_bank(b0)
+
+    engine.add_crankshaft(c0)
+
+    harmonic_cam_lobe intake_lobe(
+        duration_at_50_thou: 236 * units.deg,
+        gamma: 1.2,
+        lift: 9.0 * units.mm,
+        steps: 100
+    )
+
+    harmonic_cam_lobe exhaust_lobe(
+        duration_at_50_thou: 228 * units.deg,
+        gamma: 1.2,
+        lift: 8.0 * units.mm,
+        steps: 100
+    )
+
+    h2_camshaft camshaft(
+        lobe_profile: "N/A",
+        intake_lobe_profile: intake_lobe,
+        exhaust_lobe_profile: exhaust_lobe,
+        intake_lobe_center: 105 * units.deg,
+        exhaust_lobe_center: 100 * units.deg,
+        base_radius: 500 * units.thou
+    )
+
+    b0.set_cylinder_head (
+        h2_head(
+            intake_camshaft: camshaft.intake_cam_0,
+            exhaust_camshaft: camshaft.exhaust_cam_0
+        )
+    )
+
+    function timing_curve(1000 * units.rpm)
+    timing_curve
+        // Samples every 1000 rpm: the curve is smoothed over 1000 rpm, so wider gaps sag
+        .add_sample(0 * units.rpm, 8 * units.deg)
+        .add_sample(1000 * units.rpm, 8 * units.deg)
+        .add_sample(2000 * units.rpm, 11 * units.deg)
+        .add_sample(3000 * units.rpm, 14 * units.deg)
+        .add_sample(4000 * units.rpm, 16 * units.deg)
+        .add_sample(5000 * units.rpm, 17 * units.deg)
+        .add_sample(6000 * units.rpm, 18 * units.deg)
+        .add_sample(7000 * units.rpm, 19 * units.deg)
+        .add_sample(8000 * units.rpm, 20 * units.deg)
+        .add_sample(9000 * units.rpm, 21 * units.deg)
+        .add_sample(10000 * units.rpm, 22 * units.deg)
+        .add_sample(11000 * units.rpm, 23 * units.deg)
+        .add_sample(12000 * units.rpm, 24 * units.deg)
+        .add_sample(13000 * units.rpm, 25 * units.deg)
+        .add_sample(14000 * units.rpm, 25 * units.deg)
+        .add_sample(15000 * units.rpm, 25 * units.deg)
+
+    ignition_module ignition_module(
+        timing_curve: timing_curve,
+        rev_limit: 14000 * units.rpm,
+        limiter_duration: 0.05)
+    ignition_module
+            .connect_wire(wires.wire1, (0.0 / 4.0) * cycle)
+            .connect_wire(wires.wire2, (1.0 / 4.0) * cycle)
+            .connect_wire(wires.wire4, (2.0 / 4.0) * cycle)
+            .connect_wire(wires.wire3, (3.0 / 4.0) * cycle)
+
+    engine.add_ignition_module(ignition_module)
+}
+
+// Flame speed against turbulence: a small, fast-burning four-valve chamber
+private node h2_flame {
+    input gain: 6.0;
+    alias output __out:
+        function(5.0)
+            .add_sample(0.0, 3.0)
+            .add_sample(5.0, gain * 5.0)
+            .add_sample(10.0, gain * 10.0)
+            .add_sample(15.0, gain * 15.0)
+            .add_sample(20.0, gain * 20.0)
+            .add_sample(25.0, gain * 25.0)
+            .add_sample(30.0, gain * 30.0)
+            .add_sample(35.0, gain * 35.0)
+            .add_sample(40.0, gain * 40.0)
+            .add_sample(45.0, gain * 45.0);
+}
+
+private node h2_transmission {
+    alias output __out: transmission;
+
+    transmission transmission(
+        max_clutch_torque: 200 * units.lb_ft
+    )
+
+    transmission.add_gear(2.615)
+    transmission.add_gear(1.937)
+    transmission.add_gear(1.526)
+    transmission.add_gear(1.285)
+    transmission.add_gear(1.136)
+    transmission.add_gear(1.043)
+}
+
+private node h2_bike {
+    alias output __out:
+        vehicle(
+            mass: 563 * units.lb,
+            drag_coefficient: 0.1,
+            cross_sectional_area: (20 * units.inch) * (47 * units.inch),
+            diff_ratio: 2.353,
+            tire_radius: 8.5 * units.inch,
+            rolling_resistance: 100 * units.N
+        );
+}
+
+public node main {
+    set_engine(ninja_h2())
+    set_transmission(h2_transmission())
+    set_vehicle(h2_bike())
+}
