@@ -70,7 +70,48 @@ public node fuel => __engine_sim__fuel {
     // Firing-to-firing spread of the flame speed, growing with leftover exhaust in the charge
     // (0: none). With dilution_sensitivity, this makes a diluted idle irregular.
     input cyclic_variation [float]: 0.0;
+    // Diesel: injected into the cylinder, lighting itself after an ignition delay that the
+    // cetane number sets (1: yes). Set molecular_afr to its oxygen per molecule (17.75 for
+    // C12H23) and the intake carries plain air; see diesel_fuel().
+    input compression_ignition [float]: 0.0;
+    input cetane_number [float]: 50.0;
+    // Diesel unevenness (standard deviations): per-injector delivery, and per shot the fuel and
+    // the ignition delay. Real engines are never perfectly even; without it they sound synthetic.
+    // A charge with more burned gas in it than this won't light (0: no limit), varying firing to
+    // firing by misfire_spread: a two-stroke four-strokes at idle (ring-ding)
+    input misfire_residual [float]: 0.0;
+    input misfire_spread [float]: 0.15;
+    input injector_spread [float]: 0.04;
+    input shot_variation [float]: 0.03;
+    input idle_shot_variation [float]: 0.0;  // Small deliveries scatter more: at no load, blending to shot_variation at full (0: same)
+    input delay_variation [float]: 0.15;
     alias output __out [fuel_channel];
+}
+
+// Diesel fuel, about C12H23
+public node diesel_fuel {
+    input max_burning_efficiency: 0.95;
+    input cetane_number: 48.0;
+    input injector_spread: 0.04;
+    input shot_variation: 0.03;
+    input idle_shot_variation: 0.0;
+    input delay_variation: 0.15;
+    alias output __out:
+        fuel(
+            name: "Diesel",
+            molecular_mass: 170.0 * units.g,
+            energy_density: 42.6 * units.kJ / units.g,
+            density: 0.835 * units.kg / units.L,
+            molecular_afr: 17.75,
+            max_burning_efficiency: max_burning_efficiency,
+            burning_efficiency_randomness: 0.0,
+            compression_ignition: 1.0,
+            cetane_number: cetane_number,
+            injector_spread: injector_spread,
+            shot_variation: shot_variation,
+            idle_shot_variation: idle_shot_variation,
+            delay_variation: delay_variation
+        );
 }
 
 // Engine
@@ -111,6 +152,47 @@ private node _engine => __engine_sim__engine {
     input heat_transfer_reference_speed [float];
     input pipe_resolution [float];
     input real_gas [float];
+    input friction_model [float];
+    input fmep_constant [float];
+    input fmep_peak_pressure [float];
+    input fmep_speed [float];
+    input fmep_speed2 [float];
+    input diesel_idle_speed [float];
+    input diesel_rated_speed [float];
+    input diesel_max_fuel [float];
+    input diesel_fuel_per_injection [float];
+    input diesel_peak_torque_speed [float];
+    input diesel_rated_fuel [float];
+    input diesel_idle_max_fuel [float];
+    input diesel_governor_proportional [float];
+    input diesel_governor_integral [float];
+    input jake_brake_flow [float];
+    input combustion_noise [float];
+    input knock_resonance [float];
+    input exhaust_port_duration [float];
+    input exhaust_port_flow [float];
+    input exhaust_port_duration_low [float];
+    input power_valve_start [float];
+    input power_valve_end [float];
+    input transfer_port_duration [float];
+    input transfer_port_flow [float];
+    input crankcase_ratio [float];
+    input inlet_duration [float];
+    input disc_open [float];
+    input disc_close [float];
+    input inlet_flow [float];
+    input reed_pressure [float];
+    input reed_response [float];
+    input scavenging_quality [float];
+    input header_length [float];
+    input header_diameter [float];
+    input diffuser_length [float];
+    input belly_diameter [float];
+    input belly_length [float];
+    input baffle_length [float];
+    input stinger_length [float];
+    input stinger_diameter [float];
+    input inlet_type [float];
 
     alias output __out [engine_channel];
 }
@@ -181,6 +263,70 @@ public node engine {
     // gas for the same power (0: upstream's gas, gamma 1.4 throughout).
     input real_gas: 0;
 
+    // Mechanical friction as a mean effective pressure (Chen-Flynn), applied to the crank in
+    // place of upstream's per-piston wall friction, which grows far too fast with revs (1: yes):
+    // FMEP = constant + peak_pressure x peak cylinder pressure + speed x Sp + speed2 x Sp^2,
+    // Sp the mean piston speed (m/s). The defaults are a typical four-valve gasoline engine:
+    // about 1.0 bar at 2000 rpm and 1.8 bar at 6000 for an 86 mm stroke.
+    input friction_model: 0;
+    input fmep_constant: 30.0 * units.kPa;
+    input fmep_peak_pressure: 0.006;
+    input fmep_speed: 4.0 * units.kPa;       // per m/s
+    input fmep_speed2: 0.12 * units.kPa;     // per (m/s)^2
+
+    // Diesels (a compression-ignition fuel): there's no throttle plate (set the intake's
+    // idle_throttle_plate_position to 0); the pedal and a governor set the fuel per injection,
+    // as a share of what the cylinder's oxygen could burn. The ignition module's timing is the
+    // start of injection.
+    input diesel_idle_speed: 0.0;            // Idle governor target
+    input diesel_rated_speed: 0.0;           // Fuel falls away over 8% above this (0: none)
+    input diesel_fuel_per_injection: 0.0;    // The pump's full delivery (mass; 0: up to the smoke limit)
+    input diesel_peak_torque_speed: 0.0;     // Full delivery up to here, then falling in a line...
+    input diesel_rated_fuel: 1.0;            // ...to this share of it at the rated speed
+    input diesel_max_fuel: 0.75;             // Smoke limit: fuel over what the oxygen could burn
+    input diesel_idle_max_fuel: 0.35;        // The most the idle governor will give (share of full delivery)
+    input diesel_governor_proportional: 2.0;
+    input diesel_governor_integral: 1.0;
+    // Compression-release engine brake: off throttle, the exhaust valve cracks open at the top of
+    // each compression stroke (flow constant of that opening; 0: none)
+    input jake_brake_flow: 0.0;
+    // The rise of cylinder pressure radiating from the block, mixed into the sound: diesel
+    // clatter (0: none)
+    input combustion_noise: 0.0;
+    // ...and how it rings: 0 for a light tick (about 1-3 kHz), or a base frequency for a heavy
+    // iron block's low, slightly inharmonic modes (x1, 1.31, 2.64, 3.14), e.g. 140 Hz
+    input knock_resonance: 0.0;
+
+    // Two-strokes (cycle_angle: 360 deg, pipe_resolution set). Port timings are the total crank
+    // degrees a port is open, centred on BDC; the piston's position works out how much is open.
+    input exhaust_port_duration: 0.0;        // 0: exhaust through the head's valves
+    input exhaust_port_flow: 0.0;
+    input exhaust_port_duration_low: 0.0;    // Power valve: the port's timing at low revs...
+    input power_valve_start: 0.0;            // ...opening up to the full port between these speeds
+    input power_valve_end: 0.0;
+    input transfer_port_duration: 0.0;       // 0: a four-stroke
+    input transfer_port_flow: 0.0;
+    input crankcase_ratio: 0.0;              // Crankcase primary compression (0: a blower-fed airbox)
+    input inlet_type: 0;                     // Into the crankcase: 0 piston port, 1 reed valve, 2 rotary disc valve
+    input inlet_duration: 0.0;               // Piston port: degrees open, centred on TDC
+    input disc_open: 0.0;                    // Disc valve: opens and closes at these degrees after TDC
+    input disc_close: 0.0;
+    input inlet_flow: 0.0;
+    input reed_pressure: 3.0 * units.kPa;    // Reed: pressure across it to open fully...
+    input reed_response: 0.0008;             // ...and how fast it moves (s)
+    // How well the fresh charge pushes the burned gas out ahead of it instead of mixing in and
+    // short-circuiting (0: perfect mixing; about 1: a good loop-scavenged cylinder)
+    input scavenging_quality: 1.0;
+    // Expansion chamber, per cylinder: header, diffuser cone, belly, baffle cone, stinger
+    input header_length: 0.0;
+    input header_diameter: 0.0;
+    input diffuser_length: 0.0;
+    input belly_diameter: 0.0;               // 0: a plain pipe
+    input belly_length: 0.0;
+    input baffle_length: 0.0;
+    input stinger_length: 0.0;
+    input stinger_diameter: 0.0;
+
     alias output __out [_engine]:
         _engine(
             name: name,
@@ -210,7 +356,48 @@ public node engine {
             block_temperature: block_temperature,
             heat_transfer_reference_speed: heat_transfer_reference_speed,
             pipe_resolution: pipe_resolution,
-            real_gas: real_gas
+            real_gas: real_gas,
+            friction_model: friction_model,
+            fmep_constant: fmep_constant,
+            fmep_peak_pressure: fmep_peak_pressure,
+            fmep_speed: fmep_speed,
+            fmep_speed2: fmep_speed2,
+            diesel_idle_speed: diesel_idle_speed,
+            diesel_rated_speed: diesel_rated_speed,
+            diesel_max_fuel: diesel_max_fuel,
+            diesel_fuel_per_injection: diesel_fuel_per_injection,
+            diesel_peak_torque_speed: diesel_peak_torque_speed,
+            diesel_rated_fuel: diesel_rated_fuel,
+            diesel_idle_max_fuel: diesel_idle_max_fuel,
+            diesel_governor_proportional: diesel_governor_proportional,
+            diesel_governor_integral: diesel_governor_integral,
+            jake_brake_flow: jake_brake_flow,
+            combustion_noise: combustion_noise,
+            knock_resonance: knock_resonance,
+            exhaust_port_duration: exhaust_port_duration,
+            exhaust_port_flow: exhaust_port_flow,
+            exhaust_port_duration_low: exhaust_port_duration_low,
+            power_valve_start: power_valve_start,
+            power_valve_end: power_valve_end,
+            transfer_port_duration: transfer_port_duration,
+            transfer_port_flow: transfer_port_flow,
+            crankcase_ratio: crankcase_ratio,
+            inlet_duration: inlet_duration,
+            disc_open: disc_open,
+            disc_close: disc_close,
+            inlet_flow: inlet_flow,
+            reed_pressure: reed_pressure,
+            reed_response: reed_response,
+            scavenging_quality: scavenging_quality,
+            header_length: header_length,
+            header_diameter: header_diameter,
+            diffuser_length: diffuser_length,
+            belly_diameter: belly_diameter,
+            belly_length: belly_length,
+            baffle_length: baffle_length,
+            stinger_length: stinger_length,
+            stinger_diameter: stinger_diameter,
+            inlet_type: inlet_type
         );
 }
 
@@ -684,6 +871,9 @@ private node _exhaust_system => __engine_sim__exhaust_system {
     input audio_volume [float];
     input velocity_decay [float];
     input impulse_response [impulse_response];
+    input drone_filter [float];
+    input manifold_relative_sound_idle [float];
+    input manifold_relative_sound [float];
     alias output __out [exhaust_system_channel];
 }
 
@@ -696,6 +886,13 @@ public node exhaust_system {
     input primary_flow_rate: parameters.primary_flow_rate;
     input audio_volume: parameters.audio_volume;
     input velocity_decay: parameters.velocity_decay;
+    // Hear each cylinder's pulses against the manifold's pressure rather than ambient: for turbo
+    // diesels, whose weak blowdowns otherwise drown in the turbo's back pressure (1: yes)
+    input manifold_relative_sound: 0.0;
+    input manifold_relative_sound_idle: -1.0;  // ...at no load, blending to the above at full (-1: the same)
+    // A muffler's drone: the sound low-passed at this many times the firing frequency, following
+    // the revs, so the firing pulse's fundamental dominates (1.5 is a heavy truck muffler; 0: off)
+    input drone_filter: 0.0;
     input impulse_response;
     alias output __out [_exhaust_system]:
         _exhaust_system(
@@ -706,7 +903,10 @@ public node exhaust_system {
             primary_flow_rate: primary_flow_rate,
             audio_volume: audio_volume,
             velocity_decay: velocity_decay,
-            impulse_response: impulse_response
+            impulse_response: impulse_response,
+            manifold_relative_sound: manifold_relative_sound,
+            manifold_relative_sound_idle: manifold_relative_sound_idle,
+            drone_filter: drone_filter
         );
 }
 
@@ -758,6 +958,7 @@ public node compressor_stage => __engine_sim__compressor_stage {
     input drive_ratio [float]: 0.0;                        // Supercharger: impeller / crank speed
     input sequential_rpm [float]: 0.0;                     // Sequential twin: comes in above this engine speed
     input prespool [float]: 0.1;                           // ...its turbine's share of the exhaust until then
+    input feeds_blower [float]: 0.0;                       // Feeds the other stages: a blower (a Detroit's turbo), or the high-pressure turbo of a series pair
     input whine_order [float]: 4.0;                        // Whine pitch in multiples of shaft speed
     input gear_order [float]: 0.0;                         // Supercharger drive gear whine, multiples of crank speed (0: none)
     input gear_volume [float]: 0.5;
@@ -783,9 +984,11 @@ public node turbocharger {
     input sequential_rpm: 0.0;
     input prespool: 0.1;
     input whine_order: 4.0;
+    input feeds_blower: 0.0;
     alias output __out [compressor_stage]:
         compressor_stage(
             turbo: 1.0,
+            feeds_blower: feeds_blower,
             compressor_radius: compressor_radius,
             compressor_flow: compressor_flow,
             compressor_efficiency: compressor_efficiency,
@@ -869,6 +1072,7 @@ public node forced_induction => __engine_sim__forced_induction {
     input intake [intake];
     input exhaust_system [exhaust_system];
     input charge_volume [float]: 4.0 * units.L;            // Pipes and intercooler
+    input interstage_volume [float]: 3.0 * units.L;        // Between a turbo and the blower it feeds
     input intercooler [float]: 0.0;                        // Effectiveness (0: none, 0.8: a good one)
     input boost [float]: 0.0;                              // Wastegate opens past this (0: no wastegate)
     input wastegate_flow [float]: 0.0;
@@ -877,6 +1081,7 @@ public node forced_induction => __engine_sim__forced_induction {
     input bov_pressure [float]: 20.0 * units.kPa;          // Charge over manifold pressure that opens it
     input bov_vent [float]: 1.0;                           // 1: vents to the air (pssh), 0: recirculates
     input whine_volume [float]: 1.0;
+    input whine_floor [float]: 0.0;                        // Share of the whine heard however slowly it spins
     input hiss_volume [float]: 1.0;
     input bov_volume [float]: 1.0;
     input flutter_volume [float]: 1.0;

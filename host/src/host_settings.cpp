@@ -43,6 +43,7 @@ json HostSettings::toJson() const {
     return {
         { "script", script },
         { "simulation_frequency", simulationFrequency },
+        { "jake_brake", jakeBrake },
         { "audio", { { "headroom_db", headroomDb }, { "leveler_release", levelerRelease }, { "turbo_volume", turboVolume } } },
         { "bridge", {
             { "connect", bridge.connect },
@@ -72,6 +73,7 @@ bool HostSettings::merge(const json &object, std::string *error) {
     HostSettings updated = *this;
     if (!readField(object, "script", &updated.script, error)) return false;
     if (!readField(object, "simulation_frequency", &updated.simulationFrequency, error, 0, 400000)) return false;
+    if (!readField(object, "jake_brake", &updated.jakeBrake, error)) return false;
 
     const auto audioIt = object.find("audio");
     if (audioIt != object.end()) {
@@ -182,4 +184,5 @@ void applySettings(EngineHost *host, const HostSettings &settings) {
     host->setOutputHeadroom(settings.headroomDb);
     host->setLevelerRelease(settings.levelerRelease);
     host->setTurboVolume(settings.turboVolume);
+    host->setJakeBrake(settings.jakeBrake);
 }

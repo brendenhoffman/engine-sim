@@ -13,6 +13,7 @@
 #include "engine_sim.h"
 
 #include <map>
+#include <cmath>
 #include <set>
 
 namespace es_script {
@@ -44,6 +45,8 @@ namespace es_script {
             Engine::Parameters parameters = m_parameters;
             parameters.idleFreeRunning = m_idleFreeRunning > 0.5;
             parameters.realGas = m_realGas > 0.5;
+            parameters.friction.enabled = m_frictionModel > 0.5;
+            parameters.twoStroke.inletType = static_cast<int>(std::lround(m_inletType));
             parameters.crankshaftCount = (int)m_crankshafts.size();
             parameters.cylinderBanks = (int)m_cylinderBanks.size();
             parameters.cylinderCount = cylinderCount;
@@ -182,6 +185,47 @@ namespace es_script {
             addInput("heat_transfer_reference_speed", &m_parameters.heatTransferReferenceSpeed);
             addInput("pipe_resolution", &m_parameters.pipeResolution);
             addInput("real_gas", &m_realGas);
+            addInput("friction_model", &m_frictionModel);
+            addInput("fmep_constant", &m_parameters.friction.constant);
+            addInput("fmep_peak_pressure", &m_parameters.friction.peakPressure);
+            addInput("fmep_speed", &m_parameters.friction.speed);
+            addInput("fmep_speed2", &m_parameters.friction.speed2);
+            addInput("diesel_idle_speed", &m_parameters.diesel.idleSpeed);
+            addInput("diesel_rated_speed", &m_parameters.diesel.ratedSpeed);
+            addInput("diesel_max_fuel", &m_parameters.diesel.maxEquivalence);
+            addInput("diesel_fuel_per_injection", &m_parameters.diesel.maxFuelMass);
+            addInput("diesel_peak_torque_speed", &m_parameters.diesel.peakTorqueSpeed);
+            addInput("diesel_rated_fuel", &m_parameters.diesel.ratedFuel);
+            addInput("diesel_idle_max_fuel", &m_parameters.diesel.idleMaxEquivalence);
+            addInput("diesel_governor_proportional", &m_parameters.diesel.governorProportional);
+            addInput("diesel_governor_integral", &m_parameters.diesel.governorIntegral);
+            addInput("jake_brake_flow", &m_parameters.jakeBrakeFlow);
+            addInput("combustion_noise", &m_parameters.combustionNoise);
+            addInput("knock_resonance", &m_parameters.knockResonance);
+            addInput("exhaust_port_duration", &m_parameters.twoStroke.exhaustPortDuration);
+            addInput("exhaust_port_flow", &m_parameters.twoStroke.exhaustPortFlow);
+            addInput("exhaust_port_duration_low", &m_parameters.twoStroke.exhaustPortDurationLow);
+            addInput("power_valve_start", &m_parameters.twoStroke.powerValveStart);
+            addInput("power_valve_end", &m_parameters.twoStroke.powerValveEnd);
+            addInput("transfer_port_duration", &m_parameters.twoStroke.transferPortDuration);
+            addInput("transfer_port_flow", &m_parameters.twoStroke.transferPortFlow);
+            addInput("crankcase_ratio", &m_parameters.twoStroke.crankcaseRatio);
+            addInput("inlet_duration", &m_parameters.twoStroke.inletDuration);
+            addInput("disc_open", &m_parameters.twoStroke.discOpen);
+            addInput("disc_close", &m_parameters.twoStroke.discClose);
+            addInput("inlet_flow", &m_parameters.twoStroke.inletFlow);
+            addInput("reed_pressure", &m_parameters.twoStroke.reedPressure);
+            addInput("reed_response", &m_parameters.twoStroke.reedResponse);
+            addInput("scavenging_quality", &m_parameters.twoStroke.scavengingQuality);
+            addInput("header_length", &m_parameters.twoStroke.headerLength);
+            addInput("header_diameter", &m_parameters.twoStroke.headerDiameter);
+            addInput("diffuser_length", &m_parameters.twoStroke.diffuserLength);
+            addInput("belly_diameter", &m_parameters.twoStroke.bellyDiameter);
+            addInput("belly_length", &m_parameters.twoStroke.bellyLength);
+            addInput("baffle_length", &m_parameters.twoStroke.baffleLength);
+            addInput("stinger_length", &m_parameters.twoStroke.stingerLength);
+            addInput("stinger_diameter", &m_parameters.twoStroke.stingerDiameter);
+            addInput("inlet_type", &m_inletType);
 
             ObjectReferenceNode<EngineNode>::registerInputs();
         }
@@ -200,6 +244,8 @@ namespace es_script {
         Engine::Parameters m_parameters;
         double m_idleFreeRunning = 0;
         double m_realGas = 0;
+        double m_frictionModel = 0;
+        double m_inletType = 0;
         std::vector<CrankshaftNode *> m_crankshafts;
         std::vector<CylinderBankNode *> m_cylinderBanks;
     };

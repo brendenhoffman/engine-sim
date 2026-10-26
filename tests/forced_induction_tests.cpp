@@ -48,8 +48,8 @@ namespace {
     }
 }
 
-// The compressor characteristic: most of its pressure at no flow, a peak at the surge line,
-// nothing left at choke, and all of it scaling with tip speed squared
+// The compressor characteristic: most of its pressure at no flow, a peak at the surge line (30%
+// of choke flow), nothing left at choke, and all of it scaling with tip speed squared
 TEST(ForcedInductionTests, CompressorCharacteristic) {
     ForcedInduction fi;
     ForcedInduction::Stage s;
@@ -59,15 +59,15 @@ TEST(ForcedInductionTests, CompressorCharacteristic) {
     const double speed = 1.5e4;
     const double choke = s.compressorFlow * speed / s.maxSpeed;
     const double shutOff = fi.compressorRise(s, speed, 0, nullptr);
-    const double peak = fi.compressorRise(s, speed, choke / 2, nullptr);
+    const double peak = fi.compressorRise(s, speed, 0.3 * choke, nullptr);
     EXPECT_NEAR(shutOff / peak, 0.8, 1e-9);
+    EXPECT_GT(peak, fi.compressorRise(s, speed, 0.25 * choke, nullptr));
     EXPECT_GT(peak, fi.compressorRise(s, speed, 0.4 * choke, nullptr));
-    EXPECT_GT(peak, fi.compressorRise(s, speed, 0.6 * choke, nullptr));
     EXPECT_NEAR(fi.compressorRise(s, speed, choke, nullptr) / peak, 0, 1e-9);
     // Rising flow left of the peak: the unstable side, where surge lives
-    EXPECT_LT(fi.compressorRise(s, speed, 0.2 * choke, nullptr), fi.compressorRise(s, speed, 0.4 * choke, nullptr));
+    EXPECT_LT(fi.compressorRise(s, speed, 0.1 * choke, nullptr), fi.compressorRise(s, speed, 0.2 * choke, nullptr));
     // Tip speed squared, roughly (the pressure ratio is a power of it)
-    const double half = fi.compressorRise(s, speed / 2, choke / 4, nullptr);
+    const double half = fi.compressorRise(s, speed / 2, 0.15 * choke, nullptr);
     EXPECT_GT(peak / half, 3.5);
     EXPECT_LT(peak / half, 5.5);
 }
@@ -136,4 +136,31 @@ TEST(ForcedInductionTests, SuperchargerSurges) {
         backwards = now;
     }
     EXPECT_GT(reversals, 5);
+}
+
+// The C15 ACERT's series turbos: the low-pressure turbo feeds the high-pressure one, so the
+// charge sits above what the first delivers, and what one passes the other takes
+TEST(ForcedInductionTests, SeriesTurbos) {
+    const auto dir = std::filesystem::temp_directory_path() / "engine-sim-fi-test-c15";
+    std::filesystem::remove_all(dir);
+    EngineHost host(testPaths(dir));
+    ASSERT_TRUE(host.loadScript(std::string(ENGINE_SIM_TEST_DATA_ROOT) + "/assets/engines/caterpillar/c15.mr").engineLoaded);
+
+    auto lock = host.lock();
+    Simulator *sim = host.simulator();
+    Engine *engine = host.engine();
+    start(sim, engine);
+    const ForcedInduction *fi = engine->getIntake(0)->getForcedInduction();
+    ASSERT_NE(fi, nullptr);
+    ASSERT_EQ(fi->stageCount(), 2);
+    ASSERT_NE(fi->interstage(), nullptr);
+
+    hold(sim, engine, 1600, 1.0);
+    frames(sim, 300);
+    const double first = fi->interstage()->pressure() - ForcedInduction::Ambient;
+    EXPECT_GT(first, 30e3) << "the low-pressure turbo spools";
+    EXPECT_GT(fi->boost(), first + 30e3) << "the high-pressure turbo adds to it";
+    EXPECT_GT(fi->state(1).massFlow, 0.3);
+    EXPECT_NEAR(fi->state(0).massFlow, fi->state(1).massFlow, 0.1 * fi->state(1).massFlow);
+    EXPECT_GT(units::convert(sim->getFilteredDynoTorque(), units::Nm), 2300);
 }

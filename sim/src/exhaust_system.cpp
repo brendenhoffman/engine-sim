@@ -1,6 +1,8 @@
 #include "exhaust_system.h"
 
 #include "units.h"
+#include <algorithm>
+#include <cstdlib>
 
 ExhaustSystem::ExhaustSystem() {
     m_primaryFlowRate = 0;
@@ -51,6 +53,9 @@ void ExhaustSystem::initialize(const Parameters &params) {
     m_impulseResponse = params.impulseResponse;
     m_length = params.length;
     m_primaryTubeLength = params.primaryTubeLength;
+    m_manifoldRelativeSound = params.manifoldRelativeSound;
+    m_manifoldRelativeSoundIdle = params.manifoldRelativeSoundIdle;
+    m_droneFilter = params.droneFilter;
 }
 
 void ExhaustSystem::destroy() {
@@ -58,6 +63,9 @@ void ExhaustSystem::destroy() {
 }
 
 void ExhaustSystem::process(double dt) {
+    // Lightly smoothed (0.5 ms): keeps the manifold's pulsing at the firing rate, drops its
+    // fast noise (which, subtracted from every cylinder's pulse, made a noisy idle)
+    m_smoothedPressure += (m_system.pressure() - m_smoothedPressure) * std::min(1.0, dt / 0.0005);
     GasSystem::Mix airMix;
     airMix.p_fuel = 0;
     airMix.p_inert = 1.0;

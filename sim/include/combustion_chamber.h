@@ -110,6 +110,7 @@ class CombustionChamber : public atg_scs::ForceGenerator {
         // The signal the exhaust contributes to the sound: pressure above ambient where the
         // primary meets the collector, plus a little of its flow
         double exhaustSoundSignal() const;
+        double rawExhaustSoundSignal() const;
         // How far that signal still has to travel to the tailpipe
         double exhaustSoundPathLength() const;
         // The gas in the intake runner next to the port
@@ -119,6 +120,7 @@ class CombustionChamber : public atg_scs::ForceGenerator {
         void setGasProperties(const GasSystem::Properties *properties) {
             m_system.setProperties(properties);
             m_intakeRunnerAndManifold.setProperties(properties);
+            m_crankcase.setProperties(properties);
             m_exhaustRunnerAndPrimary.setProperties(properties);
             if (m_pipeOwner) {
                 m_intakePipe.setProperties(properties);
@@ -165,6 +167,49 @@ class CombustionChamber : public atg_scs::ForceGenerator {
         double m_crankcasePressure;
         bool m_rotorFace = false;
         double m_lastBurnCompletion = 0;
+
+        // Diesel: this cycle's injection and how its burn is going
+        struct DieselEvent {
+            bool active = false;       // Injected, not yet burned out
+            bool burning = false;      // Past the ignition delay
+            double injected = 0;       // mol of fuel
+            double burned = 0;         // mol the burn law has reached
+            double delay = 0;          // Ignition delay integral (lights at 1)
+            double elapsed = 0;        // s since injection
+            double premixed = 0.5;     // Share burned in the premixed spike
+            double startAngle = 0;     // Cycle angle it lit at
+            double equivalence = 0;
+        };
+        DieselEvent m_diesel;
+        double m_injectorBias = 0;     // This cylinder's injector, relative (0: not drawn yet)
+        double m_delayScale = 1;       // This shot's ignition delay, relative
+        void injectDiesel();
+        void burnDiesel(double dt);
+
+        // Two-stroke: the crankcase the piston's underside pumps, and the ports
+    public:
+        bool isTwoStroke() const;
+        bool hasCrankcase() const;
+        GasSystem m_crankcase;
+        double crankcasePressure() const { return hasCrankcase() ? m_crankcase.pressure() : m_crankcasePressure; }
+        double powerValveOpening() const { return m_powerValve; }
+    protected:
+        double m_transferFlowRate = 0;
+        double m_reed = 0;              // Reed valve opening, 0-1
+        double m_powerValve = 0;        // Power valve opening, 0-1
+        double m_lastPistonTravel = 0;
+        double pistonTravel() const;    // From TDC, m
+        double travelAt(double angleFromTdc) const;
+        double angleFromTdc(double travel, bool falling) const;
+        void updateTwoStrokePorts(double dt);
+        void transferFlow(double dt, double *transfer);
+
+        // Jake brake: the exhaust valve held cracked open after compression
+        bool m_jakeOpen = false;
+        double m_jakeSound = 0;        // The exhaust signal low-passed, heard while the Jake works
+        double m_jakeBlend = 0;
+        double m_lastVolume = 0;
+        double m_volumeMin = 1e9, m_volumeMax = 0;
         int m_misfires = 0;
         double m_heatTransferCoefficient = 100.0;
         double m_blockTemperature = units::celcius(90.0);

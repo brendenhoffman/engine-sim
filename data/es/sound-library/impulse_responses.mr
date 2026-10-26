@@ -23,4 +23,10 @@ public node impulse_response_library {
         impulse_response(filename: "new/minimal_muffling_02.wav", volume: 0.01);
     output minimal_muffling_03:
         impulse_response(filename: "new/minimal_muffling_03.wav", volume: 0.01);
+    // minimal_muffling_03 without its 3-4.5 kHz resonance: big open stacks (diesel trucks)
+    output straight_stack_0:
+        impulse_response(filename: "new/straight_stack_01.wav", volume: 0.01);
+    // A diesel truck's muffler: straight_stack_0 rolled off above 450 Hz, leaving the deep drone
+    output diesel_muffler_0:
+        impulse_response(filename: "new/diesel_muffler_01.wav", volume: 0.01);
 }

@@ -216,6 +216,8 @@ void Simulator::initializeSynthesizer() {
     synthParams.inputBufferSize = 44100;
     synthParams.inputChannelCount = m_engine->getExhaustSystemCount();
     synthParams.voiceCount = m_engine->getCompressorStageCount();
+    synthParams.blockChannel = m_engine->getCombustionNoise() > 0;
+    synthParams.knockResonance = static_cast<float>(m_engine->getKnockResonance());
     synthParams.inputSampleRate = static_cast<float>(getSimulationFrequency());
     m_synthesizer.initialize(synthParams);
 }

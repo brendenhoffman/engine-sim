@@ -94,6 +94,7 @@ public:
     Dynamometer m_dyno;
     CrankTorque m_crankTorque;
     CrankTorque m_accessoryTorque;   // Superchargers driven off the crank
+    CrankTorque m_frictionTorque;    // Engine friction, when the engine uses the FMEP model
     StarterMotor m_starterMotor;
 
 protected:

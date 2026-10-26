@@ -39,6 +39,13 @@ void ForcedInduction::initialize(const Parameters &params, const std::vector<Sta
     const double width = std::cbrt(params.chargeVolume);
     m_charge.setGeometry(width, width, 1.0, 0.0);
     m_wastegate = m_bov = 0;
+    m_hasInterstage = false;
+    for (const Stage &s : m_stages) m_hasInterstage = m_hasInterstage || s.feedsBlower;
+    if (m_hasInterstage) {
+        m_interstage.initialize(Ambient, params.interstageVolume, AmbientT, mix);
+        const double side = std::cbrt(params.interstageVolume);
+        m_interstage.setGeometry(side, side, 1.0, 0.0);
+    }
 
     auto reference = [](double k) {
         double limit, rate;
@@ -63,7 +70,12 @@ double ForcedInduction::compressorRise(const Stage &s, double speed, double mass
     const double psi0 = 0.8 * peak, H = 0.1 * peak;
     const double choke = std::max(s.compressorFlow * speed / s.maxSpeed, 0.02 * s.compressorFlow);
     const double W = choke / 4.0;
-    const double x = massFlow / W;
+    // The cubic peaks at x = 2, half the choke flow; real maps have their surge line further
+    // left, so the low-flow side is squeezed to put the peak at 30% of choke (0.3 x 4 = 1.2).
+    // Otherwise two compressors sharing the flow (sequential twins) sit on the surge line.
+    constexpr double SurgeX = 1.2;
+    const double raw = massFlow / W;
+    const double x = (raw < SurgeX) ? raw * 2 / SurgeX : 2 + (raw - SurgeX) * 2 / (4 - SurgeX);
     const double y = std::clamp(x - 1, -4.0, 4.0);
     const double rise = psi0 + H * (1 + 1.5 * y - 0.5 * y * y * y);
 
@@ -82,6 +94,7 @@ double ForcedInduction::compressorRise(const Stage &s, double speed, double mass
 }
 
 void ForcedInduction::process(double dt, Engine *engine, Intake *intake) {
+    m_freshMix = intake->freshMix(); // A diesel's intake carries plain air
     const double crankSpeed = std::abs(engine->getSpeed());
     const double p2 = m_charge.pressure();
     GasSystem *collector = (m_params.exhaust != nullptr) ? m_params.exhaust->getSystem() : nullptr;
@@ -112,21 +125,30 @@ void ForcedInduction::process(double dt, Engine *engine, Intake *intake) {
         // The gas in the compressor's ducting, accelerated by what the wheel makes over what
         // the charge holds
         if (s.displacement > 0) {
-            // Positive displacement: a fixed volume of ambient air per turn, less the leak back
-            const double dp = p2 - Ambient;
-            const double ideal = AmbientDensity * s.displacement * st.speed / (2 * constants::pi);
-            const double leak = s.leakage * std::sqrt(2 * AmbientDensity * std::abs(dp)) * (dp > 0 ? 1.0 : -1.0);
+            // Positive displacement: a fixed volume per turn of whatever it draws (the open air,
+            // or a turbo's delivery), less the leak back
+            const double pIn = m_hasInterstage ? m_interstage.pressure() : Ambient;
+            const double tIn = m_hasInterstage ? m_interstage.temperature() : AmbientT;
+            const double rhoIn = pIn / (SpecificR * tIn);
+            const double dp = p2 - pIn;
+            const double ideal = rhoIn * s.displacement * st.speed / (2 * constants::pi);
+            const double leak = s.leakage * std::sqrt(2 * rhoIn * std::abs(dp)) * (dp > 0 ? 1.0 : -1.0);
             st.massFlow = ideal - leak;
-            const double pr = std::max(p2 / Ambient, 1.0);
-            const double work = Cp0 * AmbientT * (std::pow(pr, (Gamma0 - 1) / Gamma0) - 1) / s.compressorEfficiency;
-            const double dn = st.massFlow * dt / MolarMass;
+            const double pr = std::max(p2 / pIn, 1.0);
+            const double work = Cp0 * tIn * (std::pow(pr, (Gamma0 - 1) / Gamma0) - 1) / s.compressorEfficiency;
+            double dn = st.massFlow * dt / MolarMass;
+            if (m_hasInterstage && dn > 0) dn = std::min(dn, 0.5 * m_interstage.n());
             if (dn > 0) {
-                double T = AmbientT + work / Cp0;
+                double T = tIn + work / Cp0;
                 T -= m_params.intercooler * (T - AmbientT);
+                if (m_hasInterstage) m_interstage.loseN(dn, m_interstage.enthalpyPerMol());
                 m_charge.gainN(dn, m_charge.energyPerMol(T, m_freshMix) + constants::R * T, m_freshMix);
             }
             else if (dn < 0) {
-                m_charge.loseN(std::min(-dn, 0.5 * m_charge.n()), m_charge.enthalpyPerMol());
+                const double out = std::min(-dn, 0.5 * m_charge.n());
+                const double h = m_charge.enthalpyPerMol();
+                m_charge.loseN(out, h);
+                if (m_hasInterstage) m_interstage.gainN(out, h, m_charge.mix());
             }
             // It does that work on everything it moves, leaked or not
             st.compressorTorque = (st.speed > 1.0) ? ideal * work / st.speed : 0.0;
@@ -137,23 +159,39 @@ void ForcedInduction::process(double dt, Engine *engine, Intake *intake) {
         // A sequential stage that's not brought in yet pumps round its recirculation path
         // (against nothing), its charge control valve shut
         const bool recirculating = s.sequentialSpeed > 0 && !st.engaged;
+        // Series turbos: a high-pressure stage draws what the low-pressure stage (feedsBlower)
+        // delivers. Its map is in corrected flow, so the denser air it gets multiplies both the
+        // flow it can pass and the pressure it makes; the work per kg is the same.
+        const bool fromInterstage = m_hasInterstage && !s.feedsBlower;
+        const double pIn = fromInterstage ? m_interstage.pressure() : Ambient;
+        const double tIn = fromInterstage ? m_interstage.temperature() : AmbientT;
+        const double rhoIn = pIn / (SpecificR * tIn);
+        const double density = rhoIn / AmbientDensity;
         double work = 0;
-        const double rise = compressorRise(s, st.speed, st.massFlow, &work);
-        const double loss = 0.5 * st.massFlow * std::abs(st.massFlow) / (2 * AmbientDensity * s.ductArea * s.ductArea);
-        const double against = recirculating ? 0.0 : p2 - Ambient;
+        const double rise = density * compressorRise(s, st.speed, st.massFlow / density, &work);
+        const double loss = 0.5 * st.massFlow * std::abs(st.massFlow) / (2 * rhoIn * s.ductArea * s.ductArea);
+        // A stage feeding another (a blower, or a high-pressure turbo) delivers into the space
+        // between them
+        GasSystem &target = (s.feedsBlower && m_hasInterstage) ? m_interstage : m_charge;
+        const double against = recirculating ? 0.0 : target.pressure() - pIn;
         st.massFlow += dt * (s.ductArea / s.ductLength) * (rise - against - loss);
-        st.massFlow = std::clamp(st.massFlow, -2 * s.compressorFlow, 2 * s.compressorFlow);
+        st.massFlow = std::clamp(st.massFlow, -2 * density * s.compressorFlow, 2 * density * s.compressorFlow);
         if (s.sequentialSpeed > 0) st.massFlow = std::max(st.massFlow, 0.0); // Check valve
 
-        const double dn = recirculating ? 0.0 : st.massFlow * dt / MolarMass;
+        double dn = recirculating ? 0.0 : st.massFlow * dt / MolarMass;
+        if (fromInterstage && dn > 0) dn = std::min(dn, 0.5 * m_interstage.n());
         if (dn > 0) {
-            double T = AmbientT + work / Cp0;
-            T -= m_params.intercooler * (T - AmbientT);
-            m_charge.gainN(dn, m_charge.energyPerMol(T, m_freshMix) + constants::R * T, m_freshMix);
+            double T = tIn + work / Cp0;
+            if (&target == &m_charge) T -= m_params.intercooler * (T - AmbientT);
+            if (fromInterstage) m_interstage.loseN(dn, m_interstage.enthalpyPerMol());
+            target.gainN(dn, target.energyPerMol(T, m_freshMix) + constants::R * T, m_freshMix);
         }
         else if (dn < 0) {
-            const double out = std::min(-dn, 0.5 * m_charge.n());
-            m_charge.loseN(out, m_charge.enthalpyPerMol());
+            const double out = std::min(-dn, 0.5 * target.n());
+            const double h = target.enthalpyPerMol();
+            const GasSystem::Mix mix = target.mix();
+            target.loseN(out, h);
+            if (fromInterstage) m_interstage.gainN(out, h, mix);
         }
         st.compressorTorque = (st.speed > 1.0) ? std::abs(st.massFlow) * work / st.speed : 0.0;
 
@@ -227,7 +265,9 @@ ForcedInduction::Voice ForcedInduction::voice(int i) const {
         : s.compressorFlow;
     const double flow = st.massFlow / capacity;
     v.frequency = s.whineOrder * st.speed / (2 * constants::pi);
-    v.whine = m_params.whineVolume * std::pow(speed, 1.5) * (0.3 + 0.7 * std::min(1.0, std::abs(flow)));
+    const double level = std::pow(speed, 1.5) * (0.3 + 0.7 * std::min(1.0, std::abs(flow)));
+    const double floor = m_params.whineFloor * std::min(1.0, speed / 0.05);
+    v.whine = m_params.whineVolume * (floor + (1 - m_params.whineFloor) * level);
     v.hiss = m_params.hissVolume * std::abs(flow) * std::sqrt(speed);
     v.flutter = m_params.flutterVolume * flow;
     if (!s.turbo && s.gearOrder > 0 && s.driveRatio > 0) {

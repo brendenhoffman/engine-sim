@@ -157,6 +157,7 @@ public node ford_predator {
         starter_speed: 200 * units.rpm,
         redline: 7500 * units.rpm,
         real_gas: 1,                        // Real gas heat capacities
+        friction_model: 1,                  // Friction as a mean effective pressure
         idle_speed: 750 * units.rpm,
         idle_fuel_cut: 1.5,
         idle_rpm: 750 * units.rpm,
@@ -262,7 +263,7 @@ public node ford_predator {
     blower.add_stage(
         roots_supercharger(
             displacement: 2.65 * units.L,
-            drive_ratio: 1.9,
+            drive_ratio: 1.8,
             max_speed: 15000 * units.rpm,
             lobes: 8.0
         )

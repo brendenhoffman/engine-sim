@@ -28,6 +28,14 @@ void Fuel::initialize(const Parameters &params) {
     m_turbulenceToFlameSpeedRatio = params.turbulenceToFlameSpeedRatio;
     m_molecularAfr = params.molecularAfr;
     m_burningEfficiencyRandomness = params.burningEfficiencyRandomness;
+    m_compressionIgnition = params.compressionIgnition;
+    m_cetaneNumber = params.cetaneNumber;
+    m_injectorSpread = params.injectorSpread;
+    m_misfireResidual = params.misfireResidual;
+    m_misfireSpread = params.misfireSpread;
+    m_shotVariation = params.shotVariation;
+    m_idleShotVariation = params.idleShotVariation;
+    m_delayVariation = params.delayVariation;
     m_maxBurningEfficiency = params.maxBurningEfficiency;
     m_maxDilutionEffect = params.maxDilutionEffect;
     m_maxTurbulenceEffect = params.maxTurbulenceEffect;

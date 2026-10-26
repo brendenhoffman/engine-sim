@@ -238,6 +238,7 @@ void EngineHost::install(const Compiled &compiled, Simulator *simulator, const s
     setOutputHeadroom(m_outputHeadroomDb);
     setLevelerRelease(m_levelerRelease);
     setTurboVolume(m_turboVolume);
+    setJakeBrake(m_jakeBrake);
     if (m_bridge) m_bridge->reset();
 
     // Consumers drop anything pointing into the old engine before it's freed
@@ -389,6 +390,11 @@ void EngineHost::setTurboVolume(double volume) {
     Synthesizer::AudioParameters params = m_simulator->synthesizer().getAudioParameters();
     params.turboVolume = static_cast<float>(volume);
     m_simulator->synthesizer().setAudioParameters(params);
+}
+
+void EngineHost::setJakeBrake(bool on) {
+    m_jakeBrake = on;
+    if (m_engine != nullptr) m_engine->setJakeBrakeEnabled(on);
 }
 
 void EngineHost::post(std::function<void()> job) {

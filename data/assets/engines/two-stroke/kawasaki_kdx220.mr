@@ -1,0 +1,212 @@
+// Kawasaki KDX220 [single-cylinder two-stroke]: 67 x 61.2 mm, 216 cc, a reed valve into the
+// crankcase, Kawasaki's KIPS exhaust power valve and an expansion chamber. Around 30 hp at
+// 8000 rpm. Below the power valve's speed the exhaust port is held low for torque; it opens up
+// as the revs come in, with the pipe.
+
+import "engine_sim.mr"
+import "themes/default.mr"
+import "two_stroke.mr"
+
+units units()
+constants constants()
+impulse_response_library ir_lib()
+
+private node wires {
+    output wire1: ignition_wire();
+}
+
+public node kawasaki_kdx220 {
+    alias output __out: engine;
+
+    engine engine(
+        name: "Kawasaki KDX220 [two-stroke single]",
+        starter_torque: 40 * units.lb_ft,
+        starter_speed: 600 * units.rpm,
+        redline: 9500 * units.rpm,
+        cycle_angle: 360 * units.deg,       // Two-stroke: a cycle every turn
+        real_gas: 1,
+        friction_model: 1,
+        fmep_constant: 15 * units.kPa,      // Roller bearings
+        pipe_resolution: 30,                // The expansion chamber is the engine
+        idle_rpm: 1700 * units.rpm,
+        // The idle screw, as a gentle idle control: four-stroking at idle, it needs a hand
+        idle_speed: 1700 * units.rpm,
+        idle_proportional: 0.3,
+        idle_integral: 0.2,
+        idle_max_opening: 0.035,             // Small: a big kick flares the revs and it hunts
+        idle_fuel_cut: 0.0,
+        throttle_gamma: 2.0,
+
+        // Ports, as total degrees open centred on BDC
+        exhaust_port_duration: 192 * units.deg,
+        exhaust_port_duration_low: 172 * units.deg,   // KIPS shut: a lower port for bottom end
+        power_valve_start: 6000 * units.rpm,
+        power_valve_end: 7500 * units.rpm,
+        exhaust_port_flow: k_carb(400),
+        transfer_port_duration: 126 * units.deg,
+        transfer_port_flow: k_carb(350),
+        crankcase_ratio: 1.38,
+        inlet_type: 1,                      // Reed valve
+        inlet_flow: k_carb(300),
+
+        // The expansion chamber
+        header_length: 0.20 * units.m,
+        header_diameter: 36 * units.mm,
+        diffuser_length: 0.46 * units.m,
+        belly_diameter: 100 * units.mm,
+        belly_length: 0.10 * units.m,
+        baffle_length: 0.36 * units.m,
+        stinger_length: 0.24 * units.m,
+        stinger_diameter: 24 * units.mm,
+
+        fuel: fuel(
+            max_burning_efficiency: 1.0,
+            dilution_sensitivity: 0.3,      // Exhaust left in the charge slows the flame: at light
+            cyclic_variation: 1.0,
+            misfire_residual: 0.65,         // Too much exhaust left in the charge and it won't light: at idle
+                                            // and light throttle it misfires and four-strokes (ring-ding)
+            turbulence_to_flame_speed_ratio: two_stroke_flame(gain: 10.0)   // A small, squished chamber burns fast
+        ),
+        hf_gain: 0.01,
+        noise: 1.0,
+        jitter: 0.3,
+        simulation_frequency: 20000
+    )
+
+    wires wires()
+
+    label stroke(61.2 * units.mm)
+    label bore(67.0 * units.mm)
+    label rod_length(112 * units.mm)
+    label compression_height(22 * units.mm)
+
+    crankshaft c0(
+        throw: stroke / 2,
+        flywheel_mass: 1.5 * units.kg,
+        mass: 2.5 * units.kg,
+        friction_torque: 0.5 * units.lb_ft,
+        moment_of_inertia: 0.006,
+        position_x: 0.0,
+        position_y: 0.0,
+        tdc: constants.pi / 2
+    )
+    rod_journal rj0(angle: 0.0)
+    c0.add_rod_journal(rj0)
+
+    piston_parameters piston_params(
+        mass: 230 * units.g,
+        compression_height: compression_height,
+        wrist_pin_position: 0.0,
+        displacement: 0.0
+    )
+    connecting_rod_parameters cr_params(
+        mass: 200 * units.g,
+        moment_of_inertia: rod_moment_of_inertia(mass: 200 * units.g, length: rod_length),
+        center_of_mass: 0.0,
+        length: rod_length
+    )
+    cylinder_bank_parameters bank_params(
+        bore: bore,
+        deck_height: stroke / 2 + rod_length + compression_height
+    )
+
+    // The carburettor (a 28 mm Keihin) is the throttle; the airbox behind it is the plenum
+    intake intake(
+        plenum_volume: 4.0 * units.L,
+        plenum_cross_section_area: 30.0 * units.cm2,
+        intake_flow_rate: k_carb(220.0),
+        runner_flow_rate: k_carb(300.0),
+        runner_length: 6.0 * units.inch,
+        idle_flow_rate: k_carb(0.0),
+        idle_throttle_plate_position: 0.9985,
+        velocity_decay: 0.5
+    )
+
+    // The silencer the stinger feeds
+    exhaust_system_parameters es_params(
+        outlet_flow_rate: k_carb(250.0),
+        primary_tube_length: 1.0 * units.inch,
+        primary_flow_rate: k_carb(300.0),
+        velocity_decay: 1.0,
+        volume: 3.0 * units.L
+    )
+    exhaust_system exhaust0(
+        es_params,
+        audio_volume: 1.0,
+        length: 20 * units.inch,
+        impulse_response: ir_lib.minimal_muffling_02
+    )
+
+    cylinder_bank b0(bank_params, angle: 0 * units.deg)
+    b0.add_cylinder(
+        piston: piston(piston_params, blowby: k_28inH2O(0.05)),
+        connecting_rod: connecting_rod(cr_params),
+        rod_journal: rj0,
+        intake: intake,
+        exhaust_system: exhaust0,
+        ignition_wire: wires.wire1
+    )
+    engine.add_cylinder_bank(b0)
+    engine.add_crankshaft(c0)
+
+    b0.set_cylinder_head(
+        two_stroke_head(
+            chamber_volume: 21 * units.cc,
+            intake_runner_cross_section_area: 6.2 * units.cm2,   // 28 mm
+            exhaust_runner_cross_section_area: 10.0 * units.cm2
+        )
+    )
+
+    // CDI: advanced low down, retarded up top to keep the pipe hot
+    function timing_curve(1000 * units.rpm)
+    timing_curve
+        .add_sample(0000 * units.rpm, 12 * units.deg)
+        .add_sample(1000 * units.rpm, 14 * units.deg)
+        .add_sample(2000 * units.rpm, 17 * units.deg)
+        .add_sample(3000 * units.rpm, 18 * units.deg)
+        .add_sample(4000 * units.rpm, 18 * units.deg)
+        .add_sample(5000 * units.rpm, 17 * units.deg)
+        .add_sample(6000 * units.rpm, 16 * units.deg)
+        .add_sample(7000 * units.rpm, 14 * units.deg)
+        .add_sample(8000 * units.rpm, 12 * units.deg)
+        .add_sample(9000 * units.rpm, 10 * units.deg)
+        .add_sample(10000 * units.rpm, 8 * units.deg)
+        .add_sample(11000 * units.rpm, 8 * units.deg)
+
+    engine.add_ignition_module(
+        ignition_module(timing_curve: timing_curve, rev_limit: 10000 * units.rpm, limiter_duration: 0.05)
+            .connect_wire(wires.wire1, 0 * units.deg)
+    )
+}
+
+private node kdx_transmission {
+    alias output __out:
+        transmission(max_clutch_torque: 60 * units.lb_ft)
+        .add_gear(2.78)
+        .add_gear(1.88)
+        .add_gear(1.44)
+        .add_gear(1.18)
+        .add_gear(1.0)
+        .add_gear(0.85);
+}
+
+private node kdx_bike {
+    alias output __out:
+        vehicle(
+            mass: 105 * units.kg + 75 * units.kg,
+            drag_coefficient: 0.6,
+            cross_sectional_area: (30 * units.inch) * (50 * units.inch),
+            diff_ratio: 3.3,
+            tire_radius: 0.34 * units.m,
+            rolling_resistance: 150 * units.N
+        );
+}
+
+public node main {
+    set_engine(kawasaki_kdx220())
+    set_transmission(kdx_transmission())
+    set_vehicle(kdx_bike())
+}
+
+use_default_theme()
+main()

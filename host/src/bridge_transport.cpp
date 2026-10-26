@@ -188,15 +188,16 @@ bool BridgeTransport::peer(sockaddr_in *out) {
     return m_hasPeer;
 }
 
-void BridgeTransport::sendTorque(float torqueNm, float rpm, float boostKpa) {
+void BridgeTransport::sendTorque(float torqueNm, float rpm, float boostKpa, float mode) {
     sockaddr_in to;
     if (m_socket < 0 || !peer(&to)) return;
 
-    char buffer[16];
+    char buffer[20];
     std::memcpy(buffer, std::isnan(torqueNm) ? "BESN" : "BES1", 4);
     std::memcpy(buffer + 4, &torqueNm, 4);
     std::memcpy(buffer + 8, &rpm, 4);
     std::memcpy(buffer + 12, &boostKpa, 4);
+    std::memcpy(buffer + 16, &mode, 4);
     sendto(m_socket, buffer, sizeof(buffer), 0, reinterpret_cast<const sockaddr *>(&to), sizeof(to));
 }
 

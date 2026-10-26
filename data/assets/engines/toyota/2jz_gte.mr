@@ -146,12 +146,13 @@ public node t2jz_gte {
         starter_torque: 200 * units.lb_ft,
         redline: 6800 * units.rpm,
         real_gas: 1,                        // Real gas heat capacities
+        friction_model: 1,                  // Friction as a mean effective pressure
         // Lumped runners: six cylinders of pipes cost more CPU than the sound gains
         idle_speed: 700 * units.rpm,
         idle_fuel_cut: 1.5,
         idle_rpm: 700 * units.rpm,
         fuel: fuel(
-            max_burning_efficiency: 0.95,   // Calibrated to the real engine's torque
+            max_burning_efficiency: 0.88,   // Calibrated to the real engine's torque
             // A pent-roof four-valve chamber burns fast: about 35 deg from spark to half burned
             turbulence_to_flame_speed_ratio: fast_flame(gain: 3.0)
         ),

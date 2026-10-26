@@ -45,8 +45,9 @@ void Synthesizer::Resonator::set(float frequency, float q, float sampleRate) {
 
 void Synthesizer::initialize(const Parameters &p) {
     m_soundChannelCount = p.inputChannelCount;
+    m_blockChannel = p.blockChannel ? p.inputChannelCount : -1;
     m_voices.assign(p.voiceCount, Voice());
-    m_inputChannelCount = p.inputChannelCount + VoiceInputs * p.voiceCount;
+    m_inputChannelCount = p.inputChannelCount + (p.blockChannel ? 1 : 0) + VoiceInputs * p.voiceCount;
     m_inputBufferSize = p.inputBufferSize;
     m_inputWriteOffset = p.inputBufferSize;
     m_audioBufferSize = p.audioBufferSize;
@@ -82,6 +83,26 @@ void Synthesizer::initialize(const Parameters &p) {
             m_audioSampleRate);
 
         m_filters[i].antialiasing.setCutoffFrequency(1900.0f, m_audioSampleRate);
+    }
+    // The block's knock keeps its top end (up to near the simulation's own limit)
+    if (m_blockChannel >= 0) {
+        m_filters[m_blockChannel].antialiasing.setCutoffFrequency(
+            std::min(0.45f * m_inputSampleRate, 0.45f * m_audioSampleRate), m_audioSampleRate);
+    }
+
+    // Block and head modes for the combustion knock (see renderAudio)
+    const float r = p.knockResonance;
+    const float light[4][2] = { { 950.0f, 8.0f }, { 1750.0f, 10.0f }, { 2900.0f, 12.0f }, { 0, 1 } };
+    const float heavy[4][2] = { { r, 20.0f }, { 1.31f * r, 20.0f }, { 2.64f * r, 25.0f }, { 3.14f * r, 25.0f } };
+    const float (*modes)[2] = (r > 0) ? heavy : light;
+    const int count = (r > 0) ? 4 : 3;
+    for (int k = 0; k < 4; ++k) {
+        if (k >= count) { m_blockModeGain[k] = 0; continue; }
+        m_blockModes[k].set(modes[k][0], modes[k][1], m_audioSampleRate);
+        // About the input's energy, shared between the modes (the light set's higher modes
+        // weighted up: the spike itself has less energy up there)
+        const float weight = (r > 0) ? 1.0f : modes[k][0] / 950.0f;
+        m_blockModeGain[k] = 0.6f * weight / std::sqrt(count * 3.14159f * modes[k][0] / (modes[k][1] * m_audioSampleRate));
     }
 
     m_levelingFilter.p_target = m_audioParameters.levelerTarget;
@@ -344,6 +365,17 @@ int16_t Synthesizer::renderAudio(int inputSample, const AudioParameters &params)
         signal += v;
     }
 
+    if (m_blockChannel >= 0) {
+        // Each cylinder's pressure spike knocks the block and head, which ring briefly at their
+        // own frequencies: a metallic tick (diesel clatter) rather than a bare click
+        const float raw = m_inputChannels[m_blockChannel].transferBuffer[inputSample];
+        m_blockDc += 0.002f * (raw - m_blockDc);
+        const float block = raw - m_blockDc;
+        float ring = 0;
+        for (int k = 0; k < 4; ++k) if (m_blockModeGain[k] != 0) ring += m_blockModeGain[k] * m_blockModes[k].f(block);
+        signal += 0.2f * block + ring;
+    }
+
     signal = m_antialiasing.fast_f(signal);
 
     m_levelingFilter.p_target = params.levelerTarget;
@@ -371,7 +403,7 @@ float Synthesizer::renderVoices(int inputSample) {
         Voice &voice = m_voices[v];
         const float *in[VoiceInputs];
         for (int k = 0; k < VoiceInputs; ++k) {
-            in[k] = m_inputChannels[m_soundChannelCount + VoiceInputs * v + k].transferBuffer;
+            in[k] = m_inputChannels[m_soundChannelCount + (m_blockChannel >= 0 ? 1 : 0) + VoiceInputs * v + k].transferBuffer;
         }
         const float frequency = std::max(0.0f, in[0][inputSample]);
         const float whine = std::max(0.0f, in[1][inputSample]);
@@ -392,7 +424,12 @@ float Synthesizer::renderVoices(int inputSample) {
             voice.bov.set(2400.0f, 0.7f, sr);
             voice.bovLow.set(700.0f, 0.9f, sr);
             voice.wastegate.set(1300.0f, 0.6f, sr);
-            voice.chatter.set(500.0f, 1.0f, sr);
+            voice.chatter.set(350.0f, 0.7f, sr);
+            // A whistle is air: noise in a narrow band at the pitch, alongside the tone
+            const float q = 30.0f;
+            const float centre = std::max(pitch, 100.0f);
+            voice.whistle.set(centre, q, sr);
+            voice.whistleGain = 0.7f / (0.577f * std::sqrt(3.14159f * centre / (q * sr)));
         }
 
         // Whine: the impeller's tone. Harmonics stop short of the top of the audio band (past
@@ -405,8 +442,11 @@ float Synthesizer::renderVoices(int inputSample) {
         float tone = std::sin(ph);
         if (2 * pitch < nyquist) tone += 0.25f * std::sin(2 * ph);
         if (3 * pitch < nyquist) tone += 0.06f * std::sin(3 * ph);
-        const float tilt = 1 / (1 + (pitch / 6000.0f) * (pitch / 6000.0f));
-        out += 0.15f * whine * tilt * tone;
+        // Softened above 4 kHz: a whistle up there is piercing, and by the time it reaches you
+        // much of it is gone
+        const float tilt = 1 / (1 + (pitch / 4000.0f) * (pitch / 4000.0f));
+        const float air = voice.whistleGain * voice.whistle.f(noise());
+        out += 0.18f * whine * tilt * (0.55f * tone + 0.45f * air);
 
         // Gears driving a supercharger
         if (gear > 0) {
@@ -423,12 +463,14 @@ float Synthesizer::renderVoices(int inputSample) {
         voice.hissLow += 0.5f * (rush - voice.hissLow);
         out += 0.25f * hiss * voice.hissLow;
 
-        // Surge: the compressor's flow swinging back and forth about its average. The swing
-        // itself is the low thump, and it chatters while it lasts.
+        // Surge: each time the compressor's flow swings back (below its average, or backwards)
+        // a puff of air pushes out through the wheel: a train of breathy chuffs at the surge
+        // rate, plus the low thump of the swing itself. Nothing while the flow is steady.
         voice.slowFlow += (twoPi * 6.0f / sr) * (flow - voice.slowFlow);
         const float swing = flow - voice.slowFlow;
-        voice.surge += (twoPi * 20.0f / sr) * (std::abs(swing) - voice.surge);
-        out += voice.surge * 3.0f * voice.chatter.f(noise()) + 0.8f * swing;
+        const float back = std::max(0.0f, -swing);
+        voice.surge += (twoPi * (back > voice.surge ? 200.0f : 25.0f) / sr) * (back - voice.surge);
+        out += voice.surge * 1.2f * voice.chatter.f(noise()) + 0.3f * swing;
 
         // Blow-off valve and wastegate: venting gas
         const float n = noise();

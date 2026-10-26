@@ -159,6 +159,7 @@ public node ford_voodoo {
         starter_speed: 200 * units.rpm,
         redline: 8250 * units.rpm,
         real_gas: 1,                        // Real gas heat capacities
+        friction_model: 1,                  // Friction as a mean effective pressure
         idle_speed: 800 * units.rpm,
         idle_fuel_cut: 1.5,
         idle_rpm: 800 * units.rpm,

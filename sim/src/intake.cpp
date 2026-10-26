@@ -72,6 +72,13 @@ void Intake::setForcedInduction(ForcedInduction *forcedInduction) {
 }
 
 GasSystem::Mix Intake::freshMix() const {
+    if (m_directInjection) {
+        GasSystem::Mix air;
+        air.p_fuel = 0;
+        air.p_inert = 0.75;
+        air.p_o2 = 0.25;
+        return air;
+    }
     const double ideal_afr = 0.8 * m_molecularAfr * 4;
     const double p_air = ideal_afr / (1 + ideal_afr);
     GasSystem::Mix fuelAirMix;
@@ -86,10 +93,12 @@ void Intake::process(double dt) {
 
     const double idle_afr = 2.0;
     const double p_idle_air = idle_afr / (1 + idle_afr);
-    GasSystem::Mix fuelMix;
-    fuelMix.p_fuel = (1.0 - p_idle_air);
-    fuelMix.p_inert = p_idle_air * 0.75;
-    fuelMix.p_o2 = p_idle_air * 0.25;
+    GasSystem::Mix fuelMix = fuelAirMix;
+    if (!m_directInjection) {
+        fuelMix.p_fuel = (1.0 - p_idle_air);
+        fuelMix.p_inert = p_idle_air * 0.75;
+        fuelMix.p_o2 = p_idle_air * 0.25;
+    }
 
     const double throttle = getThrottlePlatePosition();
     const double flowAttenuation = std::cos(throttle * constants::pi / 2);

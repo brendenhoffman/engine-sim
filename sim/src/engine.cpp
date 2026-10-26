@@ -85,6 +85,12 @@ void Engine::initialize(const Parameters &params) {
     m_heatTransferReferenceSpeed = params.heatTransferReferenceSpeed;
     m_pipeResolution = params.pipeResolution;
     m_realGas = params.realGas;
+    m_friction = params.friction;
+    m_diesel = params.diesel;
+    m_combustionNoise = params.combustionNoise;
+    m_knockResonance = params.knockResonance;
+    m_twoStroke = params.twoStroke;
+    m_jakeBrakeFlow = params.jakeBrakeFlow;
 
     m_crankshafts = new Crankshaft[m_crankshaftCount];
     m_cylinderBanks = new CylinderBank[m_cylinderBankCount];
@@ -294,7 +300,8 @@ void Engine::calculateDisplacement() {
         }
     }
 
-    double displacement = 0;
+    double displacement = 0, strokeSum = 0;
+    int strokes = 0;
     for (int i = 0; i < m_cylinderCount; ++i) {
         const Piston &piston = m_pistons[i];
         const CylinderBank &bank = *piston.getCylinderBank();
@@ -308,10 +315,38 @@ void Engine::calculateDisplacement() {
         if (min_s[i] < max_s[i]) {
             const double r = bank.getBore() / 2.0;
             displacement += constants::pi * r * r * (max_s[i] - min_s[i]);
+            strokeSum += max_s[i] - min_s[i];
+            ++strokes;
         }
     }
 
     m_displacement = displacement;
+    m_stroke = (strokes > 0) ? strokeSum / strokes : 0.0;
+}
+
+void Engine::updateDieselGovernor(double dt) {
+    const double speed = std::abs(getSpeed());
+    const double pedal = std::clamp(m_throttle != nullptr ? getSpeedControl() : 0.0, 0.0, 1.0);
+
+    double idle = 0;
+    if (m_diesel.idleSpeed > 0) {
+        const double error = (m_diesel.idleSpeed - speed) / m_diesel.idleSpeed;
+        m_dieselIntegral = std::clamp(m_dieselIntegral + m_diesel.governorIntegral * error * dt, 0.0, m_diesel.idleMaxEquivalence);
+        idle = std::clamp(m_dieselIntegral + m_diesel.governorProportional * error, 0.0, m_diesel.idleMaxEquivalence);
+    }
+    double fullLoad = 1.0;
+    if (m_diesel.peakTorqueSpeed > 0 && m_diesel.ratedSpeed > m_diesel.peakTorqueSpeed) {
+        const double x = std::clamp((speed - m_diesel.peakTorqueSpeed) / (m_diesel.ratedSpeed - m_diesel.peakTorqueSpeed), 0.0, 1.0);
+        fullLoad = 1 - (1 - m_diesel.ratedFuel) * x;
+    }
+    double fuel = std::max(pedal * fullLoad, idle);
+    if (m_diesel.ratedSpeed > 0 && speed > m_diesel.ratedSpeed) {
+        fuel *= std::clamp(1 - (speed - m_diesel.ratedSpeed) / (0.08 * m_diesel.ratedSpeed), 0.0, 1.0);
+    }
+    m_dieselFueling = fuel;
+
+    m_jakeBrakeActive = m_jakeBrakeFlow > 0 && m_jakeBrakeEnabled && pedal < 0.02
+        && speed > 1.3 * std::max(m_diesel.idleSpeed, units::rpm(500));
 }
 
 int Engine::getCompressorStageCount() const {

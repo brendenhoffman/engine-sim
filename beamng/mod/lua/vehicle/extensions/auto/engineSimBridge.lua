@@ -6,7 +6,7 @@ local M = {}
 local ffi = require("ffi")
 pcall(ffi.cdef, [[
 typedef struct { char magic[4]; float rpm, throttle, ignition, volume, pan; } engineSimOut_t;
-typedef struct { char magic[4]; float torque, rpm, boost; } engineSimIn_t;
+typedef struct { char magic[4]; float torque, rpm, boost, mode; } engineSimIn_t;
 ]])
 
 local enginePort = 4570
@@ -23,6 +23,8 @@ local origTorqueUpdate
 local esTorque, esAge = 0, math.huge
 -- engine-sim's manifold pressure above ambient, kPa (negative: vacuum), for the boost gauge
 local esBoost
+-- 1: engine-sim's torque is a brake only (its Jake brake): applied where it brakes harder
+local esBrakeOnly = false
 local active = false
 local originalBlends = {}
 local appliedProfileId
@@ -205,10 +207,33 @@ local function torqueUpdate(device, dt)
   if device.ignitionCoef <= 0 or device.isStalled or device.outputAV1 < device.idleAV * 0.6 then return end
 
   local beamTorque = device.lastOutputTorque - device.frictionTorque
+  if esBrakeOnly and esTorque >= beamTorque then return end
   local dAV = dt * (esTorque - beamTorque) * device.invEngInertia * device.outputAVState
   for i = 1, device.activeOutputPortCount do
     local name = device.outputAVNames[device.activeOutputPorts[i]]
     device[name] = math.max(device[name] + dAV, 0)
+  end
+end
+
+local boostLinked = false
+local function writeBoost()
+  electrics.values.turboBoost = esBoost * 0.145038
+  electrics.values.superchargerBoost = 0
+  electrics.values.boost = electrics.values.turboBoost
+end
+
+local wrappedBoost = {}
+local function wrapBoostWriters()
+  for _, name in ipairs({"turbocharger", "supercharger"}) do
+    local unit = engine[name]
+    if unit and unit.updateGFX and unit.updateGFX ~= wrappedBoost[name] then
+      local original = unit.updateGFX
+      wrappedBoost[name] = function(...)
+        original(...)
+        if boostLinked then writeBoost() end
+      end
+      unit.updateGFX = wrappedBoost[name]
+    end
   end
 end
 
@@ -226,12 +251,14 @@ local function updateGFX(dt)
   while true do
     local data = udp:receive()
     if not data then break end
-    -- 12 bytes from older engine-sim builds, 16 with the boost
-    local tag = (#data == 12 or #data == ffi.sizeof(inPacket)) and data:sub(1, 4)
+    -- 12 bytes from older engine-sim builds, 16 with the boost, 20 with the mode
+    local tag = (#data == 12 or #data == 16 or #data == ffi.sizeof(inPacket)) and data:sub(1, 4)
     if tag == "BES1" or tag == "BESN" then
       inPacket.boost = 0
+      inPacket.mode = 0
       ffi.copy(inPacket, data, #data)
       esBoost = #data >= 16 and inPacket.boost or nil
+      esBrakeOnly = inPacket.mode == 1
       esAge = 0
     end
     if tag == "BES1" then
@@ -286,11 +313,12 @@ local function updateGFX(dt)
   active = linked
   if not seated then return end
 
-  -- The car's boost gauge shows engine-sim's manifold pressure (psi; negative is vacuum)
-  -- rather than the game's own turbo, which doesn't know what engine-sim is doing
-  if linked and esBoost then
-    electrics.values.turboBoost = esBoost * 0.145038
-  end
+  -- The car's boost gauges read electrics.boost = turboBoost + superchargerBoost (psi), which
+  -- the game's own turbo and supercharger write in their updateGFX. Wrap those so engine-sim's
+  -- manifold pressure (negative: vacuum) replaces them; adding to them read double.
+  wrapBoostWriters()
+  boostLinked = linked and esBoost ~= nil
+  if boostLinked then writeBoost() end
 
   outPacket.rpm = math.abs(engine.outputAV1) * 9.549296596
   -- Pedal only: BeamNG's randomized idle-controller pulses made engine-sim surge at idle

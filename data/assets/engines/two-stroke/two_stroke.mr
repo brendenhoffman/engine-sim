@@ -1,0 +1,76 @@
+// Shared parts for two-stroke engines.
+//
+// A two-stroke breathes through ports in its cylinder wall, described on the engine (see the
+// two-stroke inputs in objects.mr: port timings, crankcase, inlet, power valve, expansion
+// chamber). Its head is just a combustion chamber: the camshafts and valve flows here are
+// placeholders the ports override (engine-sim's heads need them).
+
+import "engine_sim.mr"
+
+units units()
+constants constants()
+
+private node two_stroke_no_lobe {
+    alias output __out:
+        function(10 * units.deg)
+            .add_sample(-180 * units.deg, 0.0)
+            .add_sample(180 * units.deg, 0.0);
+}
+
+// A camshaft with nothing on it (one placeholder lobe per cylinder, up to six)
+public node two_stroke_cams {
+    output intake_cam: _intake;
+    output exhaust_cam: _exhaust;
+
+    camshaft_parameters params(advance: 0.0, base_radius: 10 * units.mm)
+    camshaft _intake(params, lobe_profile: two_stroke_no_lobe())
+    camshaft _exhaust(params, lobe_profile: two_stroke_no_lobe())
+    _intake.add_lobe(0.0).add_lobe(0.0).add_lobe(0.0).add_lobe(0.0).add_lobe(0.0).add_lobe(0.0)
+    _exhaust.add_lobe(0.0).add_lobe(0.0).add_lobe(0.0).add_lobe(0.0).add_lobe(0.0).add_lobe(0.0)
+}
+
+// A two-stroke's head: the combustion chamber, and the runner sizes the intake pipe (carb and
+// reed block or port) and the exhaust pipe start from
+public node two_stroke_head {
+    input chamber_volume;
+    input intake_runner_cross_section_area: 6.0 * units.cm2;
+    input exhaust_runner_cross_section_area: 10.0 * units.cm2;
+    input intake_runner_volume: 50.0 * units.cc;
+    input exhaust_runner_volume: 20.0 * units.cc;
+    alias output __out: head;
+
+    function no_flow(50 * units.thou)
+    no_flow.add_flow_sample(0, 0).add_flow_sample(50, 0)
+
+    two_stroke_cams cams()
+    generic_cylinder_head head(
+        chamber_volume: chamber_volume,
+        intake_runner_volume: intake_runner_volume,
+        intake_runner_cross_section_area: intake_runner_cross_section_area,
+        exhaust_runner_volume: exhaust_runner_volume,
+        exhaust_runner_cross_section_area: exhaust_runner_cross_section_area,
+        intake_port_flow: no_flow,
+        exhaust_port_flow: no_flow,
+        valvetrain: standard_valvetrain(
+            intake_camshaft: cams.intake_cam,
+            exhaust_camshaft: cams.exhaust_cam
+        )
+    )
+}
+
+// Flame speed against turbulence, scaled by gain (upstream's default is 1.5)
+public node two_stroke_flame {
+    input gain: 3.5;
+    alias output __out:
+        function(5.0)
+            .add_sample(0.0, 3.0)
+            .add_sample(5.0, gain * 5.0)
+            .add_sample(10.0, gain * 10.0)
+            .add_sample(15.0, gain * 15.0)
+            .add_sample(20.0, gain * 20.0)
+            .add_sample(25.0, gain * 25.0)
+            .add_sample(30.0, gain * 30.0)
+            .add_sample(35.0, gain * 35.0)
+            .add_sample(40.0, gain * 40.0)
+            .add_sample(45.0, gain * 45.0);
+}

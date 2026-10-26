@@ -63,7 +63,8 @@ class Synthesizer {
             float surge = 0;            // Envelope of that swing
             float hissLow = 0;          // One-pole low-pass state, to take the edge off the hiss
             int counter = 0;
-            Resonator hiss, bov, bovLow, wastegate, chatter;
+            Resonator hiss, bov, bovLow, wastegate, chatter, whistle;
+            float whistleGain = 1;      // Brings the narrow-band noise to about the tone's level
         };
 
         struct Parameters {
@@ -73,6 +74,12 @@ class Synthesizer {
             float inputSampleRate = 10000;
             float audioSampleRate = 44100;
             int voiceCount = 0;
+            // A channel for sound radiated by the engine block (combustion knock), mixed in
+            // without the exhaust's filtering and impulse response; it follows the exhaust ones
+            bool blockChannel = false;
+            // Its ringing: 0 for a light metallic tick (about 1-3 kHz); a base frequency (Hz)
+            // for a heavy iron block's low, slightly inharmonic modes (x1, 1.31, 2.64, 3.14)
+            float knockResonance = 0;
             AudioParameters initialAudioParameters;
         };
 
@@ -162,6 +169,10 @@ class Synthesizer {
 
         // Engine sound channels come first; the rest drive the voices
         int m_soundChannelCount = 0;
+        int m_blockChannel = -1;
+        float m_blockDc = 0;
+        Resonator m_blockModes[4];
+        float m_blockModeGain[4] = { 1, 1, 1, 0 };
         std::vector<Voice> m_voices;
         uint32_t m_noiseState = 0x12345678u;
         float noise() {

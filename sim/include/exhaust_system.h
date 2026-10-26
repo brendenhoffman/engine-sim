@@ -19,6 +19,13 @@ class ExhaustSystem : public Part {
             double velocityDecay;
             double audioVolume;
             ImpulseResponse *impulseResponse;
+            // Hear each cylinder's pulses against the manifold's pressure, not ambient (for
+            // turbo diesels, whose weak blowdowns drown in the turbo's back pressure)
+            double manifoldRelativeSound = 0; // 0-1: how much of the manifold's pressure to take off
+            double manifoldRelativeSoundIdle = -1; // ...at no load (a diesel's idle); -1: the same
+            // A muffler's drone: the sound low-passed at this many times the firing frequency,
+            // following the revs (0: off). Leaves the firing pulse's fundamental to dominate.
+            double droneFilter = 0;
         };
 
     public:
@@ -45,6 +52,15 @@ class ExhaustSystem : public Part {
         // A turbocharger's turbine (and wastegate) takes over the outlet
         void setOutletExternal(bool external) { m_outletExternal = external; }
         bool isOutletExternal() const { return m_outletExternal; }
+        double getManifoldRelativeSound() const { return m_manifoldRelativeSound; }
+        double getDroneFilter() const { return m_droneFilter; }
+        // The weight at a load (0-1)
+        double manifoldRelativeSoundAt(double load) const {
+            if (m_manifoldRelativeSoundIdle < 0) return m_manifoldRelativeSound;
+            return m_manifoldRelativeSoundIdle + (m_manifoldRelativeSound - m_manifoldRelativeSoundIdle) * load;
+        }
+        // The manifold's pressure, lightly smoothed (see process())
+        double getSmoothedPressure() const { return m_smoothedPressure; }
         void setExternalFlow(double flow) { m_flow = flow; }
         void setGasProperties(const GasSystem::Properties *properties) {
             m_system.setProperties(properties);
@@ -63,6 +79,10 @@ class ExhaustSystem : public Part {
         double m_primaryFlowRate;
         double m_outletFlowRate;
         bool m_outletExternal = false;
+        double m_manifoldRelativeSound = 0;
+        double m_manifoldRelativeSoundIdle = -1;
+        double m_droneFilter = 0;
+        double m_smoothedPressure = 101325;
         double m_audioVolume;
         double m_velocityDecay;
         int m_index;

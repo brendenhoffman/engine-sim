@@ -19,6 +19,7 @@ namespace es_script {
         ForcedInduction::Stage stage() const {
             ForcedInduction::Stage s = m_stage;
             s.turbo = m_turbo > 0.5;
+            s.feedsBlower = m_feedsBlower > 0.5;
             return s;
         }
 
@@ -40,6 +41,7 @@ namespace es_script {
             addInput("drive_ratio", &m_stage.driveRatio);
             addInput("sequential_rpm", &m_stage.sequentialSpeed);
             addInput("prespool", &m_stage.prespool);
+            addInput("feeds_blower", &m_feedsBlower);
             addInput("whine_order", &m_stage.whineOrder);
             addInput("gear_order", &m_stage.gearOrder);
             addInput("displacement", &m_stage.displacement);
@@ -55,6 +57,7 @@ namespace es_script {
         }
 
         double m_turbo = 1;
+        double m_feedsBlower = 0;
         ForcedInduction::Stage m_stage;
     };
 
@@ -72,6 +75,7 @@ namespace es_script {
             addInput("intake", &m_intake, InputTarget::Type::Object);
             addInput("exhaust_system", &m_exhaust, InputTarget::Type::Object);
             addInput("charge_volume", &m_setup.parameters.chargeVolume);
+            addInput("interstage_volume", &m_setup.parameters.interstageVolume);
             addInput("intercooler", &m_setup.parameters.intercooler);
             addInput("boost", &m_setup.parameters.boost);
             addInput("wastegate_flow", &m_setup.parameters.wastegateFlow);
@@ -80,6 +84,7 @@ namespace es_script {
             addInput("bov_pressure", &m_setup.parameters.bovPressure);
             addInput("bov_vent", &m_bovVent);
             addInput("whine_volume", &m_setup.parameters.whineVolume);
+            addInput("whine_floor", &m_setup.parameters.whineFloor);
             addInput("hiss_volume", &m_setup.parameters.hissVolume);
             addInput("bov_volume", &m_setup.parameters.bovVolume);
             addInput("flutter_volume", &m_setup.parameters.flutterVolume);

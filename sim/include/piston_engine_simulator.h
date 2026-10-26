@@ -1,6 +1,8 @@
 #ifndef ATG_ENGINE_SIM_PISTON_ENGINE_SIMULATOR_H
 #define ATG_ENGINE_SIM_PISTON_ENGINE_SIMULATOR_H
 
+#include <vector>
+
 #include "simulator.h"
 
 #include "engine.h"
@@ -66,6 +68,10 @@ class PistonEngineSimulator : public Simulator {
         Vehicle *m_vehicle;
 
         double *m_exhaustFlowStagingBuffer;
+        double m_peakCylinderPressure = 101325; // Held about a cycle, for the friction model
+        std::vector<double> m_lastChamberPressure;  // For the combustion noise
+        struct Drone { double x1 = 0, x2 = 0, y1 = 0, y2 = 0; };
+        std::vector<Drone> m_drone;                 // Per exhaust system (see ExhaustSystem::droneFilter)
 
         int m_fluidSimulationSteps;
 };

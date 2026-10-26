@@ -94,7 +94,10 @@ class GasSystem {
         void changeMix(const Mix &mix);
         void injectFuel(double n);
 
-        double react(double n, const Mix &mix);
+        double react(double n, const Mix &mix, double o2PerFuel = 12.5);
+        // Burns up to nFuel moles of the fuel in this gas with its oxygen (o2PerFuel each);
+        // returns the fuel burned. For diesel, whose fuel is injected rather than mixed.
+        double burnFuel(double nFuel, double o2PerFuel);
         static double flowConstant(double flowRate, double P, double pressureDrop, double T, double hcr);
         static double k_28inH2O(double flowRateScfm);
         static double k_inH2O(double flowRateScfm, double testPressureInH2O); // Flow bench rating at any test pressure
@@ -109,6 +112,14 @@ class GasSystem {
             double chokedFlowLimit,
             double chokedFlowRateCached);
         double loseN(double dn, double E_k_per_mol);
+        // Loses gas of a given composition rather than its average (a stratified cylinder)
+        double loseN(double dn, double E_k_per_mol, const Mix &mix);
+
+        // What leaves through pipes, when it isn't the average (a two-stroke's scavenging)
+        void setOutflowMix(const Mix &mix) { m_outflowMix = mix; m_hasOutflowMix = true; }
+        void clearOutflowMix() { m_hasOutflowMix = false; }
+        bool hasOutflowMix() const { return m_hasOutflowMix; }
+        Mix outflowMix() const { return m_hasOutflowMix ? m_outflowMix : m_state.mix; }
         double gainN(double dn, double E_k_per_mol, const Mix &mix = {});
         void dissipateExcessVelocity();
 
@@ -160,6 +171,8 @@ class GasSystem {
 
         int m_degreesOfFreedom = 5;
         const Properties *m_properties = &Properties::Ideal;
+        Mix m_outflowMix;
+        bool m_hasOutflowMix = false;
         HeatCapacity m_heat;
 
         double m_chokedFlowLimit = 0;

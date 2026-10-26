@@ -20,6 +20,7 @@ namespace es_script {
 
         void generate(Fuel *fuel, EngineContext *context) const {
             Fuel::Parameters params = m_parameters;
+            params.compressionIgnition = m_compressionIgnition > 0.5;
             params.turbulenceToFlameSpeedRatio =
                 m_turbulenceToFlameSpeedRatio->generate(context);
 
@@ -44,6 +45,14 @@ namespace es_script {
             addInput("max_dilution_effect", &m_parameters.maxDilutionEffect);
             addInput("dilution_sensitivity", &m_parameters.dilutionSensitivity);
             addInput("cyclic_variation", &m_parameters.cyclicVariation);
+            addInput("compression_ignition", &m_compressionIgnition);
+            addInput("cetane_number", &m_parameters.cetaneNumber);
+            addInput("injector_spread", &m_parameters.injectorSpread);
+            addInput("misfire_residual", &m_parameters.misfireResidual);
+            addInput("misfire_spread", &m_parameters.misfireSpread);
+            addInput("shot_variation", &m_parameters.shotVariation);
+            addInput("idle_shot_variation", &m_parameters.idleShotVariation);
+            addInput("delay_variation", &m_parameters.delayVariation);
 
             ObjectReferenceNode<FuelNode>::registerInputs();
         }
@@ -56,6 +65,7 @@ namespace es_script {
         }
 
         FunctionNode *m_turbulenceToFlameSpeedRatio = nullptr;
+        double m_compressionIgnition = 0;
         Fuel::Parameters m_parameters;
     };
 

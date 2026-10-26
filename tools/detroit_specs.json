@@ -1,0 +1,341 @@
+[
+ {
+  "file": "6v71n.mr",
+  "node": "detroit_6v71n",
+  "series": 71,
+  "cylinders": 6,
+  "name": "Detroit Diesel 6V-71N [two-stroke V6 diesel]",
+  "comment": "Detroit Diesel 6V-71N [two-stroke V6 diesel], 7.0 L (426 cu in): 4.25 x 5 in, 18.7:1, a\ngear-driven 6-71 Roots blower, unit injectors, four exhaust valves per cylinder. 238 hp at\n2100 rpm and about 630 lb-ft, governed at 2100, idling at 500.",
+  "compression": 18.7,
+  "idle": 550,
+  "rated": 2100,
+  "peak_torque_rpm": 1500,
+  "fuel_mg": 60,
+  "rated_fuel": 0.93,
+  "exhaust": {
+   "outlet_flow": 1500,
+   "length": 90
+  },
+  "blower": {
+   "comment": "The 6-71 blower: two three-lobe rotors, geared 1.95 times crank speed",
+   "displacement": 339,
+   "drive_ratio": 1.95
+  }
+ },
+ {
+  "file": "6v71t.mr",
+  "node": "detroit_6v71t",
+  "series": 71,
+  "cylinders": 6,
+  "name": "Detroit Diesel 6V-71T [two-stroke V6 turbo diesel]",
+  "comment": "Detroit Diesel 6V-71T [two-stroke V6 turbo diesel], 7.0 L: the 6V-71 with a turbo ahead of its\nblower, 17:1. About 300 hp at 2100 rpm.",
+  "compression": 17.0,
+  "idle": 550,
+  "rated": 2100,
+  "peak_torque_rpm": 1400,
+  "fuel_mg": 82,
+  "rated_fuel": 0.85,
+  "exhaust": {
+   "outlet_flow": 1500,
+   "length": 90
+  },
+  "blower": {
+   "comment": "A turbo into the 6-71 blower",
+   "displacement": 339,
+   "drive_ratio": 1.95
+  },
+  "turbo": {
+   "radius": 34,
+   "flow": 0.9,
+   "turbine_flow": 350,
+   "inertia": 0.0003,
+   "max_speed": 100000
+  }
+ },
+ {
+  "file": "8v71n.mr",
+  "node": "detroit_8v71n",
+  "series": 71,
+  "cylinders": 8,
+  "name": "Detroit Diesel 8V-71N [two-stroke V8 diesel]",
+  "comment": "Detroit Diesel 8V-71N [two-stroke V8 diesel], 9.3 L (568 cu in): 4.25 x 5 in, 18.7:1, an 8-71\nRoots blower. 318 hp at 2100 rpm and about 850 lb-ft. Its four throws at right angles in a\n63.5 deg V make it fire unevenly.",
+  "compression": 18.7,
+  "idle": 550,
+  "rated": 2100,
+  "peak_torque_rpm": 1500,
+  "fuel_mg": 60,
+  "rated_fuel": 0.93,
+  "exhaust": {
+   "outlet_flow": 2000,
+   "length": 90
+  },
+  "blower": {
+   "comment": "The 8-71 blower: two three-lobe rotors, geared 2.0 times crank speed",
+   "displacement": 452,
+   "drive_ratio": 2.0
+  }
+ },
+ {
+  "file": "8v71ta.mr",
+  "node": "detroit_8v71ta",
+  "series": 71,
+  "cylinders": 8,
+  "name": "Detroit Diesel 8V-71TA [two-stroke V8 turbo diesel]",
+  "comment": "Detroit Diesel 8V-71TA [two-stroke V8 turbo diesel], 9.3 L: a turbo ahead of the 8-71 blower\nand an aftercooler behind it, 17:1. 435 hp at 2100 rpm.",
+  "compression": 17.0,
+  "idle": 550,
+  "rated": 2100,
+  "peak_torque_rpm": 1300,
+  "fuel_mg": 88,
+  "rated_fuel": 0.85,
+  "aftercooler": 0.5,
+  "exhaust": {
+   "outlet_flow": 2000,
+   "length": 90
+  },
+  "blower": {
+   "comment": "A turbo into the 8-71 blower, then an aftercooler",
+   "displacement": 452,
+   "drive_ratio": 2.0
+  },
+  "turbo": {
+   "radius": 38,
+   "flow": 1.2,
+   "turbine_flow": 460,
+   "inertia": 0.0004,
+   "max_speed": 95000
+  }
+ },
+ {
+  "file": "12v71n.mr",
+  "node": "detroit_12v71n",
+  "series": 71,
+  "cylinders": 12,
+  "name": "Detroit Diesel 12V-71N [two-stroke V12 diesel]",
+  "comment": "Detroit Diesel 12V-71N [two-stroke V12 diesel], 14.0 L (852 cu in): two 6V-71s end to end,\neach with its 6-71 blower. 475 hp at 2100 rpm.",
+  "compression": 18.7,
+  "idle": 550,
+  "rated": 2100,
+  "peak_torque_rpm": 1500,
+  "fuel_mg": 60,
+  "rated_fuel": 0.93,
+  "flywheel": 100,
+  "exhaust": {
+   "outlet_flow": 3000,
+   "length": 100
+  },
+  "blower": {
+   "comment": "Two 6-71 blowers (as one)",
+   "displacement": 678,
+   "drive_ratio": 1.95
+  }
+ },
+ {
+  "file": "12v71t.mr",
+  "node": "detroit_12v71t",
+  "series": 71,
+  "cylinders": 12,
+  "name": "Detroit Diesel 12V-71T [two-stroke V12 turbo diesel]",
+  "comment": "Detroit Diesel 12V-71T [two-stroke V12 turbo diesel], 14.0 L: two turbos ahead of its two 6-71\nblowers, 17:1. About 525 hp at 2100 rpm.",
+  "compression": 17.0,
+  "idle": 550,
+  "rated": 2100,
+  "peak_torque_rpm": 1400,
+  "fuel_mg": 72,
+  "rated_fuel": 0.85,
+  "flywheel": 100,
+  "exhaust": {
+   "outlet_flow": 3000,
+   "length": 100
+  },
+  "blower": {
+   "comment": "Two turbos into two 6-71 blowers",
+   "displacement": 678,
+   "drive_ratio": 1.95
+  },
+  "turbo": {
+   "count": 2,
+   "radius": 34,
+   "flow": 0.9,
+   "turbine_flow": 350,
+   "inertia": 0.0003,
+   "max_speed": 100000
+  }
+ },
+ {
+  "file": "16v71ti.mr",
+  "node": "detroit_16v71ti",
+  "series": 71,
+  "cylinders": 16,
+  "name": "Detroit Diesel 16V-71TI [two-stroke V16 turbo diesel]",
+  "comment": "Detroit Diesel 16V-71TI [two-stroke V16 turbo diesel], 18.6 L (1136 cu in): two 8V-71s end to\nend, two turbos ahead of two 8-71 blowers and an intercooler, 17:1. About 900 hp at 2300 rpm\n(marine and industrial).",
+  "compression": 17.0,
+  "idle": 600,
+  "rated": 2300,
+  "peak_torque_rpm": 1500,
+  "fuel_mg": 85,
+  "rated_fuel": 0.85,
+  "flywheel": 130,
+  "aftercooler": 0.5,
+  "exhaust": {
+   "outlet_flow": 4000,
+   "length": 100
+  },
+  "blower": {
+   "comment": "Two turbos into two 8-71 blowers, then the intercooler",
+   "displacement": 904,
+   "drive_ratio": 2.0
+  },
+  "turbo": {
+   "count": 2,
+   "radius": 38,
+   "flow": 1.2,
+   "turbine_flow": 460,
+   "inertia": 0.0004,
+   "max_speed": 95000
+  },
+  "sim_freq": 8000
+ },
+ {
+  "file": "6v92n.mr",
+  "node": "detroit_6v92n",
+  "series": 92,
+  "cylinders": 6,
+  "name": "Detroit Diesel 6V-92N [two-stroke V6 diesel]",
+  "comment": "Detroit Diesel 6V-92N [two-stroke V6 diesel], 9.0 L (552 cu in): the 6V-71's block bored to\n4.84 in, 19:1, a bigger blower. About 277 hp at 2100 rpm.",
+  "compression": 19.0,
+  "idle": 600,
+  "rated": 2100,
+  "peak_torque_rpm": 1500,
+  "fuel_mg": 68,
+  "rated_fuel": 1.0,
+  "exhaust": {
+   "outlet_flow": 1800,
+   "length": 90
+  },
+  "blower": {
+   "comment": "The 6V-92's blower: two three-lobe rotors, geared 2.0 times crank speed",
+   "displacement": 439,
+   "drive_ratio": 2.0
+  }
+ },
+ {
+  "file": "6v92ta.mr",
+  "node": "detroit_6v92ta",
+  "series": 92,
+  "cylinders": 6,
+  "name": "Detroit Diesel 6V-92TA [two-stroke V6 turbo diesel]",
+  "comment": "Detroit Diesel 6V-92TA [two-stroke V6 turbo diesel], 9.0 L: a turbo ahead of the blower and an\naftercooler, 17:1. 350 hp at 2100 rpm and about 1000 lb-ft at 1200.",
+  "compression": 17.0,
+  "idle": 600,
+  "rated": 2100,
+  "peak_torque_rpm": 1200,
+  "fuel_mg": 101,
+  "rated_fuel": 0.85,
+  "aftercooler": 0.5,
+  "exhaust": {
+   "outlet_flow": 1800,
+   "length": 90
+  },
+  "blower": {
+   "comment": "A turbo into the blower, then the aftercooler",
+   "displacement": 439,
+   "drive_ratio": 2.0
+  },
+  "turbo": {
+   "radius": 36,
+   "flow": 1.0,
+   "turbine_flow": 450,
+   "inertia": 0.00035,
+   "max_speed": 100000
+  }
+ },
+ {
+  "file": "8v92n.mr",
+  "node": "detroit_8v92n",
+  "series": 92,
+  "cylinders": 8,
+  "name": "Detroit Diesel 8V-92N [two-stroke V8 diesel]",
+  "comment": "Detroit Diesel 8V-92N [two-stroke V8 diesel], 12.1 L (736 cu in): 4.84 x 5 in, 19:1. About\n368 hp at 2100 rpm. It fires unevenly, as the 8V-71 does.",
+  "compression": 19.0,
+  "idle": 600,
+  "rated": 2100,
+  "peak_torque_rpm": 1500,
+  "fuel_mg": 68,
+  "rated_fuel": 1.0,
+  "exhaust": {
+   "outlet_flow": 2400,
+   "length": 90
+  },
+  "blower": {
+   "comment": "The 8V-92's blower, geared 2.0 times crank speed",
+   "displacement": 586,
+   "drive_ratio": 2.0
+  }
+ },
+ {
+  "file": "8v92ta.mr",
+  "node": "detroit_8v92ta",
+  "series": 92,
+  "cylinders": 8,
+  "name": "Detroit Diesel 8V-92TA [two-stroke V8 turbo diesel]",
+  "comment": "Detroit Diesel 8V-92TA [two-stroke V8 turbo diesel], 12.1 L: a turbo ahead of the blower and\nan aftercooler, 17:1. 475 hp at 2100 rpm and about 1300 lb-ft at 1300.",
+  "compression": 17.0,
+  "idle": 600,
+  "rated": 2100,
+  "peak_torque_rpm": 1300,
+  "fuel_mg": 100,
+  "rated_fuel": 0.85,
+  "aftercooler": 0.5,
+  "exhaust": {
+   "outlet_flow": 2400,
+   "length": 90
+  },
+  "blower": {
+   "comment": "A turbo into the blower, then the aftercooler",
+   "displacement": 586,
+   "drive_ratio": 2.0
+  },
+  "turbo": {
+   "radius": 40,
+   "flow": 1.3,
+   "turbine_flow": 550,
+   "inertia": 0.00045,
+   "max_speed": 95000
+  }
+ },
+ {
+  "file": "16v92ta.mr",
+  "node": "detroit_16v92ta",
+  "series": 92,
+  "cylinders": 16,
+  "name": "Detroit Diesel 16V-92TA [two-stroke V16 turbo diesel]",
+  "comment": "Detroit Diesel 16V-92TA [two-stroke V16 turbo diesel], 24.1 L (1472 cu in): two 8V-92s end to\nend, two turbos ahead of two blowers and aftercoolers. About 1080 hp at 2300 rpm (mining trucks,\nboats, generators).",
+  "compression": 17.0,
+  "idle": 600,
+  "rated": 2300,
+  "peak_torque_rpm": 1500,
+  "fuel_mg": 106,
+  "rated_fuel": 0.85,
+  "flywheel": 150,
+  "aftercooler": 0.5,
+  "exhaust": {
+   "outlet_flow": 4800,
+   "length": 100
+  },
+  "blower": {
+   "comment": "Two turbos into two blowers, then the aftercoolers",
+   "displacement": 1172,
+   "drive_ratio": 2.0
+  },
+  "turbo": {
+   "count": 2,
+   "radius": 40,
+   "flow": 1.3,
+   "turbine_flow": 600,
+   "inertia": 0.00045,
+   "max_speed": 95000
+  },
+  "sim_freq": 8000
+ }
+]

@@ -1,5 +1,8 @@
 #include "piston_engine_simulator.h"
 #include "forced_induction.h"
+#include <cstdio>
+#include <algorithm>
+#include <cstdlib>
 
 #include "constants.h"
 #include "units.h"
@@ -187,6 +190,10 @@ void PistonEngineSimulator::loadSimulation(Engine *engine, Vehicle *vehicle, Tra
     m_accessoryTorque.connect(&m_engine->getOutputCrankshaft()->m_body);
     m_accessoryTorque.torque = 0;
     m_system->addForceGenerator(&m_accessoryTorque);
+    m_frictionTorque.connect(&m_engine->getOutputCrankshaft()->m_body);
+    m_frictionTorque.torque = 0;
+    m_system->addForceGenerator(&m_frictionTorque);
+    m_peakCylinderPressure = units::pressure(1.0, units::atm);
 
     m_starterMotor.connectCrankshaft(m_engine->getOutputCrankshaft());
     m_starterMotor.m_maxTorque = m_engine->getStarterTorque();
@@ -238,6 +245,19 @@ void PistonEngineSimulator::placeAndInitialize() {
         m_delayFilters[i].initialize(delay, 10000.0);
     }
 
+    // Diesels: plain air in the intakes, the fuel goes into the cylinders
+    if (m_engine->getFuel()->isCompressionIgnition()) {
+        for (int i = 0; i < m_engine->getIntakeCount(); ++i) {
+            Intake *intake = m_engine->getIntake(i);
+            intake->setDirectInjection(true);
+            // Clear the fuel-air mix they were set up with
+            intake->m_system.changeMix(intake->freshMix());
+            if (ForcedInduction *fi = intake->getForcedInduction()) fi->charge()->changeMix(intake->freshMix());
+        }
+    }
+    m_lastChamberPressure.assign(cylinderCount, units::pressure(1.0, units::atm));
+    m_drone.assign(m_engine->getExhaustSystemCount(), Drone());
+
     // Every volume and pipe has to share a gas model: a mole crossing between two models would
     // change temperature on the way
     if (m_engine->getRealGas()) {
@@ -249,7 +269,7 @@ void PistonEngineSimulator::placeAndInitialize() {
 
     m_engine->getIgnitionModule()->reset();
 
-    m_exhaustFlowStagingBuffer = new double[m_engine->getExhaustSystemCount()
+    m_exhaustFlowStagingBuffer = new double[m_engine->getExhaustSystemCount() + 1
         + Synthesizer::VoiceInputs * m_engine->getCompressorStageCount()];
 }
 
@@ -306,6 +326,9 @@ void PistonEngineSimulator::simulateStep_() {
     const double timestep = getTimestep();
     IgnitionModule *im = m_engine->getIgnitionModule();
     im->update(timestep);
+    if (m_engine->getFuel()->isCompressionIgnition() || m_engine->getJakeBrakeFlow() > 0) {
+        m_engine->updateDieselGovernor(timestep);
+    }
 
     const int cylinderCount = m_engine->getCylinderCount();
     for (int i = 0; i < cylinderCount; ++i) {
@@ -353,6 +376,24 @@ void PistonEngineSimulator::simulateStep_() {
     // Superchargers' drag, against the crank's rotation, on the next step
     const double crankSpeed = m_engine->getOutputCrankshaft()->m_body.v_theta;
     m_accessoryTorque.torque = (crankSpeed > 0 ? -1.0 : 1.0) * accessoryLoad / m_fluidSimulationSteps;
+
+    // Friction as a mean effective pressure: the work it takes per cycle spread over the cycle.
+    // The peak cylinder pressure is held for about a cycle so it reads each firing's peak.
+    const Engine::Parameters::Friction &friction = m_engine->getFriction();
+    if (friction.enabled) {
+        double pressure = 0;
+        for (int i = 0; i < cylinderCount; ++i) pressure = std::max(pressure, m_engine->getChamber(i)->m_system.pressure());
+        const double omega = std::abs(crankSpeed);
+        const double cycle = m_engine->getOutputCrankshaft()->getCycleLength();
+        const double hold = std::exp(-timestep * std::max(omega, 10.0) / cycle);
+        m_peakCylinderPressure = std::max(pressure, units::pressure(1.0, units::atm) + hold * (m_peakCylinderPressure - units::pressure(1.0, units::atm)));
+        const double pistonSpeed = m_engine->getStroke() * omega / constants::pi;
+        const double fmep = friction.constant + friction.peakPressure * m_peakCylinderPressure
+            + friction.speed * pistonSpeed + friction.speed2 * pistonSpeed * pistonSpeed;
+        const double torque = fmep * m_engine->getDisplacement() / cycle;
+        // Smoothly through zero speed, so a stopped crank isn't kicked either way
+        m_frictionTorque.torque = -torque * std::tanh(crankSpeed / 2.0);
+    }
 }
 
 double PistonEngineSimulator::getTotalExhaustFlow() const {
@@ -409,7 +450,8 @@ void PistonEngineSimulator::destroy() {
 
 void PistonEngineSimulator::writeToSynthesizer() {
     const int exhaustSystemCount = m_engine->getExhaustSystemCount();
-    for (int i = 0; i < exhaustSystemCount; ++i) {
+    const bool block = m_engine->getCombustionNoise() > 0;
+    for (int i = 0; i < exhaustSystemCount + (block ? 1 : 0); ++i) {
         m_exhaustFlowStagingBuffer[i] = 0;
     }
 
@@ -431,6 +473,15 @@ void PistonEngineSimulator::writeToSynthesizer() {
 
         double exhaustFlow = attenuation_3 * 1600 * chamber->exhaustSoundSignal();
 
+        // Combustion noise: the cylinder pressure's rise each step (scaled to a 10 kHz step),
+        // heard through the block rather than the exhaust, so without its delay
+        double knock = 0;
+        if (m_engine->getCombustionNoise() > 0 && i < static_cast<int>(m_lastChamberPressure.size())) {
+            const double p = chamber->m_system.pressure();
+            knock = 1000 * m_engine->getCombustionNoise() * attenuation_3 * (p - m_lastChamberPressure[i]) * (timestep * 10000);
+            m_lastChamberPressure[i] = p;
+        }
+
         const double delayedExhaustPulse =
             m_delayFilters[i].fast_f(exhaustFlow);
 
@@ -439,10 +490,38 @@ void PistonEngineSimulator::writeToSynthesizer() {
             head->getSoundAttenuation(piston->getCylinderIndex())
             * (exhaustSystem->getAudioVolume() * delayedExhaustPulse / cylinderCount)
             * (1 / (exhaustLength * exhaustLength));
+        if (block) m_exhaustFlowStagingBuffer[exhaustSystemCount] += knock / cylinderCount;
+    }
+
+    // Muffler drone: a two-pole low-pass following the firing frequency
+    const double firing = cylinderCount * std::abs(m_engine->getOutputCrankshaft()->m_body.v_theta)
+        / m_engine->getOutputCrankshaft()->getCycleLength();
+    for (int i = 0; i < exhaustSystemCount && i < static_cast<int>(m_drone.size()); ++i) {
+        const double k = m_engine->getExhaustSystem(i)->getDroneFilter();
+        if (k <= 0) continue;
+        const double fs = 1.0 / timestep;
+        const double fc = std::clamp(k * firing, 20.0, 0.4 * fs);
+        const double w0 = 2 * constants::pi * fc / fs;
+        const double alpha = std::sin(w0) / (2 * 0.7071);
+        const double cw = std::cos(w0), a0 = 1 + alpha;
+        const double b0 = (1 - cw) / 2 / a0, b1 = (1 - cw) / a0, a1 = -2 * cw / a0, a2 = (1 - alpha) / a0;
+        Drone &d = m_drone[i];
+        const double x = m_exhaustFlowStagingBuffer[i];
+        const double y = b0 * x + b1 * d.x1 + b0 * d.x2 - a1 * d.y1 - a2 * d.y2;
+        d.x2 = d.x1; d.x1 = x; d.y2 = d.y1; d.y1 = y;
+        m_exhaustFlowStagingBuffer[i] = y;
+    }
+
+    static const bool signalTrace = std::getenv("ENGINE_SIM_SIGNAL_TRACE") != nullptr;
+    if (signalTrace) {
+        static double ex = 0, bl = 0; static int n = 0;
+        ex += m_exhaustFlowStagingBuffer[0] * m_exhaustFlowStagingBuffer[0];
+        if (block) bl += m_exhaustFlowStagingBuffer[exhaustSystemCount] * m_exhaustFlowStagingBuffer[exhaustSystemCount];
+        if (++n == 20000) { std::fprintf(stderr, "signal rms: exhaust %.3g block %.3g\n", std::sqrt(ex / n), std::sqrt(bl / n)); ex = bl = 0; n = 0; }
     }
 
     // Turbo and supercharger voices
-    double *voice = m_exhaustFlowStagingBuffer + exhaustSystemCount;
+    double *voice = m_exhaustFlowStagingBuffer + exhaustSystemCount + (block ? 1 : 0);
     for (int i = 0; i < m_engine->getIntakeCount(); ++i) {
         const ForcedInduction *fi = m_engine->getIntake(i)->getForcedInduction();
         if (fi == nullptr) continue;

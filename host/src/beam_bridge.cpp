@@ -222,10 +222,14 @@ void BeamBridge::beforeFrame(Simulator *simulator, Engine *engine, double dt) {
         // Sound only unless asked; even then BeamNG keeps idle and closed-throttle torque
         const bool beamIdles = !m_settings.driveCar || sweeping
             || m_input.rpm < m_settings.beamIdleRpm || m_input.throttle < 0.02f;
+        // A Jake brake slows the truck: its braking goes to the game even when engine-sim is
+        // only making the sound, used only where it brakes harder than the game's own engine
+        const bool jake = engine->isJakeBrakeActive() && !sweeping;
         m_transport->sendTorque(
-            beamIdles ? std::nanf("") : static_cast<float>(units::convert(engineTorque, units::Nm)),
+            (beamIdles && !jake) ? std::nanf("") : static_cast<float>(units::convert(engineTorque, units::Nm)),
             static_cast<float>(units::toRpm(m_rampTo)),
-            static_cast<float>((engine->getManifoldPressure() - units::pressure(1.0, units::atm)) / 1000.0));
+            static_cast<float>((engine->getManifoldPressure() - units::pressure(1.0, units::atm)) / 1000.0),
+            (beamIdles && jake) ? 1.0f : 0.0f);
     }
 
     m_profileSendTimer += dt;

@@ -74,6 +74,84 @@ class Engine : public Part {
             // so pressure waves travel in them (0: lumped volumes, upstream)
             double pipeResolution = 0;
             bool realGas = false;           // GasSystem::Properties::Real everywhere
+
+            // Mechanical friction as a mean effective pressure (Chen-Flynn form), applied to the
+            // crank in place of the per-piston wall friction: FMEP = constant
+            // + peakPressure x (peak cylinder pressure) + speed x Sp + speed2 x Sp^2, with Sp the
+            // mean piston speed. Off: upstream's piston friction.
+            struct Friction {
+                bool enabled = false;
+                double constant = 30e3;         // Pa
+                double peakPressure = 0.006;
+                double speed = 4000;            // Pa per m/s
+                double speed2 = 120;            // Pa per (m/s)^2
+            } friction;
+
+            // Diesel fuel governor. The pedal sets the share of the pump's full delivery
+            // (maxFuelMass per injection); a PI idle governor holds idleSpeed; above ratedSpeed
+            // the fuel falls away to nothing over the droop (8%). Whatever is asked for, no more
+            // is injected than the cylinder's oxygen could burn at maxEquivalence (the smoke
+            // limit). With no maxFuelMass the share applies to that limit instead.
+            struct Diesel {
+                double idleSpeed = 0;           // rad/s
+                double ratedSpeed = 0;          // rad/s (0: no limit but the ignition module's)
+                double maxFuelMass = 0;         // kg per injection
+                // The full-load curve: full delivery up to peakTorqueSpeed, falling in a line to
+                // ratedFuel (a share of it) at ratedSpeed, as fuel maps shape a torque curve
+                double peakTorqueSpeed = 0;     // rad/s (0: full delivery all the way)
+                double ratedFuel = 1.0;
+                double maxEquivalence = 0.75;
+                double idleMaxEquivalence = 0.35; // The idle governor's most, as a share of full delivery
+                double governorProportional = 2.0;
+                double governorIntegral = 1.0;
+            } diesel;
+
+            // Compression-release engine brake: off throttle, the exhaust valve is cracked open
+            // at the top of the compression stroke, dumping the compressed air (flow constant;
+            // 0: none)
+            double jakeBrakeFlow = 0;
+
+            // The cylinder pressure's rise radiated straight from the block (diesel knock), mixed
+            // in with the exhaust (0: none)
+            double combustionNoise = 0;
+            double knockResonance = 0;      // See Synthesizer::Parameters
+
+            // Two-stroke ports (cycle_angle 360 deg). Ports in the cylinder wall open as the piston
+            // uncovers them, so their timing (total degrees open, centred on BDC) sets how high
+            // they sit; their area grows with how much is uncovered.
+            struct TwoStroke {
+                double exhaustPortDuration = 0;     // rad (0: exhaust through the head's valves)
+                double exhaustPortFlow = 0;         // flow constant, fully open
+                // Exhaust power valve: a shorter port (lower timing) at low revs, opening up to
+                // the full port between these speeds (0: none)
+                double exhaustPortDurationLow = 0;
+                double powerValveStart = 0, powerValveEnd = 0;  // rad/s
+                double transferPortDuration = 0;    // rad (0: not a two-stroke)
+                double transferPortFlow = 0;
+                // Crankcase scavenging: the piston's underside pumps the crankcase, which feeds
+                // the transfers. Primary compression ratio (about 1.3-1.5; 0: a blower-fed airbox,
+                // the transfers drawing from the intake)
+                double crankcaseRatio = 0;
+                // How charge gets into the crankcase: 0 a piston port (open centred on TDC for
+                // inletDuration), 1 a reed valve (opens on the pressure across it), 2 a rotary
+                // disc valve (open from discOpen to discClose, crank degrees after TDC)
+                int inletType = 0;
+                double inletDuration = 0;
+                double discOpen = 0, discClose = 0;
+                double inletFlow = 0;
+                double reedPressure = 3000;         // Pa across it to open fully
+                double reedResponse = 0.0008;       // s
+                // How well the fresh charge pushes the burned gas out ahead of it rather than
+                // mixing in (0: perfect mixing; about 1: a good loop-scavenged engine). The gas
+                // leaving while the transfers flow carries fresh share f^(1 + this).
+                double scavengingQuality = 1.0;
+                // Expansion chamber (the exhaust pipe's shape; with pipe_resolution): header,
+                // diffuser cone, belly, baffle cone, stinger (bellyDiameter 0: a plain pipe)
+                double headerLength = 0, headerDiameter = 0, diffuserLength = 0;
+                double bellyDiameter = 0, bellyLength = 0, baffleLength = 0;
+                double stingerLength = 0, stingerDiameter = 0;
+                bool enabled() const { return transferPortDuration > 0; }
+            } twoStroke;
         };
 
     public:
@@ -147,6 +225,21 @@ class Engine : public Part {
         double getHeatTransferReferenceSpeed() const { return m_heatTransferReferenceSpeed; }
         double getPipeResolution() const { return m_pipeResolution; }
         bool getRealGas() const { return m_realGas; }
+        const Parameters::Friction &getFriction() const { return m_friction; }
+        double getStroke() const { return m_stroke; }   // Mean, over the piston cylinders
+        const Parameters::Diesel &getDiesel() const { return m_diesel; }
+        double getCombustionNoise() const { return m_combustionNoise; }
+        double getKnockResonance() const { return m_knockResonance; }
+        const Parameters::TwoStroke &getTwoStroke() const { return m_twoStroke; }
+        double getJakeBrakeFlow() const { return m_jakeBrakeFlow; }
+
+        // Diesel fueling this step (share of full delivery), and the governor that sets it
+        double getDieselFueling() const { return m_dieselFueling; }
+        void updateDieselGovernor(double dt);
+        // Jake brake: switched on (a cab switch; on by default) and acting this step
+        void setJakeBrakeEnabled(bool on) { m_jakeBrakeEnabled = on; }
+        bool isJakeBrakeEnabled() const { return m_jakeBrakeEnabled; }
+        bool isJakeBrakeActive() const { return m_jakeBrakeActive; }
         // Turbochargers and superchargers across all intakes
         int getCompressorStageCount() const;
 
@@ -188,6 +281,17 @@ class Engine : public Part {
         double m_heatTransferReferenceSpeed = 0;
         double m_pipeResolution = 0;
         bool m_realGas = false;
+        Parameters::Friction m_friction;
+        Parameters::Diesel m_diesel;
+        double m_combustionNoise = 0;
+        double m_knockResonance = 0;
+        Parameters::TwoStroke m_twoStroke;
+        double m_jakeBrakeFlow = 0;
+        double m_dieselFueling = 0;
+        double m_dieselIntegral = 0;
+        bool m_jakeBrakeEnabled = false;
+        bool m_jakeBrakeActive = false;
+        double m_stroke = 0;
 
         ExhaustSystem *m_exhaustSystems;
         int m_exhaustSystemCount;

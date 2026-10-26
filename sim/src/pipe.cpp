@@ -352,7 +352,8 @@ void Pipe::endFlux(int end, const Prim &pipeSide, const HeatCapacity &pipeHeat, 
         const double energy = sign * through.energy * open * area * dt;
         const double moles = mass / MolarMass;
         if (moles > 0) {
-            c.volume->loseN(moles, energy / moles);
+            if (c.volume->hasOutflowMix()) c.volume->loseN(moles, energy / moles, c.volume->outflowMix());
+            else c.volume->loseN(moles, energy / moles);
         }
         else if (moles < 0) {
             GasSystem::Mix mix;
@@ -374,7 +375,7 @@ void Pipe::connectionFlux(int end, const Connection &c, const Prim &pipeSide, co
     *open = 0;
     if (c.volume == nullptr || c.k <= 0 || c.volume->n() <= 0 || c.volume->temperature() <= 0) return;
 
-    const GasSystem::Mix mix = c.volume->mix();
+    const GasSystem::Mix mix = c.volume->outflowMix();
     const double outward = (end == 0) ? -1.0 : 1.0;
 
     // A ghost cell beyond the end, held at the volume's pressure with the pipe's velocity

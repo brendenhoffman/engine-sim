@@ -60,6 +60,10 @@ class ForcedInduction {
             double displacement = 0;               // m^3 per rotor revolution
             double leakage = 0;                    // Effective leak area, m^2
 
+            // Feeds the other stages rather than the charge: a Detroit's turbo ahead of its
+            // blower, or the low-pressure turbo of a series pair (the rest draw what it delivers)
+            bool feedsBlower = false;
+
             // Sequential: brought in above this engine speed (rad/s; 0: always in)
             double sequentialSpeed = 0;
             double prespool = 0.1;                 // Its turbine's share of flow until then
@@ -73,6 +77,7 @@ class ForcedInduction {
         struct Parameters {
             ExhaustSystem *exhaust = nullptr;      // Feeds the turbines
             double chargeVolume = 0.004;           // m^3
+            double interstageVolume = 0.003;       // Between a turbo and the blower it feeds
             double intercooler = 0;                // Effectiveness, 0-1
             double boost = 0;                      // Wastegate target, Pa above ambient (0: none)
             double wastegateFlow = 0;              // engine-sim flow constant, fully open
@@ -82,6 +87,7 @@ class ForcedInduction {
             bool bovVent = true;                   // Vents to the air (false: recirculates)
 
             double whineVolume = 1.0;
+            double whineFloor = 0.0;               // Share of the whine heard however slowly it spins (diesels whistle at idle)
             double hissVolume = 1.0;
             double bovVolume = 1.0;
             double flutterVolume = 1.0;
@@ -111,7 +117,10 @@ class ForcedInduction {
 
     public:
         void initialize(const Parameters &params, const std::vector<Stage> &stages, const GasSystem::Mix &mix);
-        void setGasProperties(const GasSystem::Properties *properties) { m_charge.setProperties(properties); }
+        void setGasProperties(const GasSystem::Properties *properties) {
+            m_charge.setProperties(properties);
+            m_interstage.setProperties(properties);
+        }
 
         // One fluid step: compressors fill the charge volume, turbines and wastegate drain the
         // exhaust collector, shafts spin up or down
@@ -120,6 +129,8 @@ class ForcedInduction {
         // Load the superchargers put on the crankshaft (N m, against its rotation)
         double crankLoad() const { return m_crankLoad; }
 
+        // Between a turbo and the blower it feeds (null if no stage feeds a blower)
+        const GasSystem *interstage() const { return m_hasInterstage ? &m_interstage : nullptr; }
         GasSystem *charge() { return &m_charge; }
         const GasSystem *charge() const { return &m_charge; }
         ExhaustSystem *exhaust() const { return m_params.exhaust; }
@@ -143,6 +154,8 @@ class ForcedInduction {
         std::vector<Stage> m_stages;
         std::vector<StageState> m_state;
         GasSystem m_charge;
+        GasSystem m_interstage;
+        bool m_hasInterstage = false;
         GasSystem::Mix m_freshMix;
         double m_wastegate = 0;
         double m_bov = 0;

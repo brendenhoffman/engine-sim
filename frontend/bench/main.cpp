@@ -49,13 +49,17 @@ namespace {
         int points = 10;
         bool dyno = true;
         bool traceIdle = false;
+        double idleSeconds = 3.0;
         bool traceCombustion = false;
         double levelerRelease = 0; // 0: the default
         double idleRamp = 1.0;     // Seconds to bring it down from the rev limit before idling
         double idleStart = 1000;   // Where it's let go to find its idle
         double holdIdle = 0;
         double traceBurn = 0;      // Report how full-throttle burns go at this rpm
-        double liftRpm = 0;        // Throttle snapped shut on boost at this speed (blow-off, surge)
+        double liftRpm = 0;
+        bool blip = false;
+        bool jake = false;         // Jake brake switched on         // Free revving: idle, full throttle 0.8 s, back to idle
+        double rampFrom = 0, rampTo = 0, rampSeconds = 0; // Full throttle, revs climbing slowly        // Throttle snapped shut on boost at this speed (blow-off, surge)
         double steadyRpm = 0;      // With --wav: render a steady hold instead of the run-up
         double steadyThrottle = 0;
         bool startStop = false;
@@ -82,6 +86,11 @@ namespace {
             "  --couple-free     ...hands off within 300 rpm of it (BeamNG's free-running idle)\n"
             "  --couple-no-iac   ...with the engine's own idle control off\n"
             "  --closed          also measure closed-throttle torque at each dyno point\n"
+            "  --ramp A:B:S      full throttle, revs held climbing from A to B over S seconds (a high-gear\n"
+            "                    pull); traces the forced induction every 0.1 s (renders it with --wav)\n"
+            "  --jake            switch the Jake brake on (diesels that have one)\n"
+            "  --blip            with --wav, free revs: idle 2 s, full throttle 0.8 s (no load), 3 s back\n"
+            "                    to idle, twice\n"
             "  --lift RPM        held at RPM: 3 s full throttle, 2 s shut, 1.5 s full again; traces the\n"
             "                    forced induction every 20 ms (renders it with --wav)\n"
             "  --start-stop      with --wav, render cranking from rest, 3 s idle, then ignition off\n"
@@ -89,6 +98,7 @@ namespace {
             "  --idle-start RPM  where the idle test lets go (default 1000)\n"
             "  --idle-ramp S     seconds to come down from the limit before the idle test (default 1)\n"
             "  --trace-combustion  print every firing while idling (residual gas, mixture, burn)\n"
+            "  --idle-seconds S  how long the idle test runs (default 3)\n"
             "  --trace-idle      print the rpm every 0.1 s while settling to idle\n");
     }
 
@@ -105,12 +115,19 @@ namespace {
 
             if (arg == "--json") { const char *v = value("--json"); if (!v) return false; options->jsonOut = v; }
             else if (arg == "--compare") { const char *v = value("--compare"); if (!v) return false; options->compareWith = v; }
+            else if (arg == "--ramp") {
+                const char *v = value("--ramp"); if (!v) return false;
+                if (std::sscanf(v, "%lf:%lf:%lf", &options->rampFrom, &options->rampTo, &options->rampSeconds) != 3) return false;
+            }
+            else if (arg == "--blip") options->blip = true;
+            else if (arg == "--jake") options->jake = true;
             else if (arg == "--lift") { const char *v = value("--lift"); if (!v) return false; options->liftRpm = std::atof(v); }
             else if (arg == "--wav") { const char *v = value("--wav"); if (!v) return false; options->wavDir = v; }
             else if (arg == "--tolerance") { const char *v = value("--tolerance"); if (!v) return false; options->tolerance = std::atof(v); }
             else if (arg == "--points") { const char *v = value("--points"); if (!v) return false; options->points = std::max(2, std::atoi(v)); }
             else if (arg == "--no-dyno") options->dyno = false;
             else if (arg == "--trace-idle") options->traceIdle = true;
+            else if (arg == "--idle-seconds") { const char *v = value("--idle-seconds"); if (!v) return false; options->idleSeconds = std::atof(v); }
             else if (arg == "--trace-combustion") options->traceCombustion = true;
             else if (arg == "--trace-burn") { const char *v = value("--trace-burn"); if (!v) return false; options->traceBurn = std::atof(v); }
             else if (arg == "--steady") {
@@ -252,6 +269,7 @@ namespace {
         }
 
         auto lock = host.lock();
+        if (options.jake) host.engine()->setJakeBrakeEnabled(true);
         Simulator *simulator = host.simulator();
         Engine *engine = host.engine();
         result["name"] = engine->getName();
@@ -461,7 +479,7 @@ namespace {
             std::string strip;
             std::map<int, int> misfires;
             for (int c = 0; c < engine->getCylinderCount(); ++c) misfires[c] = engine->getChamber(c)->misfires();
-            bench.run(3.0, [&] {
+            bench.run(options.idleSeconds, [&] {
                 ++combustionFrame;
                 if (options.traceCombustion) {
                     for (int c = 0; c < engine->getCylinderCount(); ++c) {
@@ -541,6 +559,58 @@ namespace {
             bench.run(4.0);
             bench.record(false);
             simulated += 13.0;
+        }
+        else if (options.blip) {
+            bench.hold(1200, 0.0);
+            bench.run(0.5);
+            bench.release(0.0);
+            bench.run(2.0);
+            bench.record(true);
+            double t = 0;
+            auto trace = [&] {
+                t += 1 / 60.0;
+                if (static_cast<int>(std::round(t * 60)) % 15 != 0) return;
+                double shaft = 0;
+                for (int k = 0; k < engine->getIntakeCount(); ++k) {
+                    if (const ForcedInduction *fi = engine->getIntake(k)->getForcedInduction()) shaft = fi->state(0).speed;
+                }
+                std::printf("  blip t=%.2f  %5.0f rpm  compressor %5.1fk rpm\n", t, std::abs(engine->getRpm()), shaft * 60 / (2 * constants::pi) / 1000);
+            };
+            for (int i = 0; i < 2; ++i) {
+                bench.run(2.0, trace);
+                engine->setSpeedControl(1.0);
+                bench.run(0.8, trace);
+                engine->setSpeedControl(0.0);
+                bench.run(3.0, trace);
+            }
+            bench.record(false);
+            simulated += 14;
+        }
+        else if (options.rampSeconds > 0) {
+            bench.hold(options.rampFrom, 1.0);
+            bench.run(2.0);
+            bench.record(true);
+            int frame = 0;
+            const int frames = static_cast<int>(options.rampSeconds * 60);
+            bench.run(options.rampSeconds, [&] {
+                ++frame;
+                const double rpm = options.rampFrom + (options.rampTo - options.rampFrom) * frame / frames;
+                bench.hold(rpm, 1.0);
+                if (frame % 6 != 0) return;
+                for (int k = 0; k < engine->getIntakeCount(); ++k) {
+                    const ForcedInduction *fi = engine->getIntake(k)->getForcedInduction();
+                    if (fi == nullptr) continue;
+                    std::printf("  ramp %5.0f rpm  boost %+6.1f kPa  torque %5.0f Nm  wg %.2f",
+                        rpm, fi->boost() / 1000, units::convert(simulator->getFilteredDynoTorque(), units::Nm), fi->wastegateOpening());
+                    for (int j = 0; j < fi->stageCount(); ++j) {
+                        std::printf(" | %3.0fk %+.3f%s", fi->state(j).speed * 60 / (2 * constants::pi) / 1000, fi->state(j).massFlow,
+                            fi->state(j).engaged ? "" : " off");
+                    }
+                    std::printf("\n");
+                }
+            });
+            bench.record(false);
+            simulated += 2 + options.rampSeconds;
         }
         else if (options.liftRpm > 0) {
             bench.hold(options.liftRpm, 1.0);

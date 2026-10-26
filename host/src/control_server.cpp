@@ -246,6 +246,8 @@ json ControlServer::status() {
                 }
             }
             if (!shafts.empty()) reply["engine"]["compressor_krpm"] = shafts;
+            reply["engine"]["has_jake_brake"] = engine->getJakeBrakeFlow() > 0;
+            reply["engine"]["jake_brake_active"] = engine->isJakeBrakeActive();
         }
         else {
             reply["engine"] = nullptr;

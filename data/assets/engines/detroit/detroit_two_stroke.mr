@@ -1,0 +1,118 @@
+// Shared parts for Detroit Diesel's two-stroke engines (the 53, 71 and 92 series).
+//
+// A Detroit two-stroke is uniflow scavenged: a gear-driven Roots blower fills the airbox around
+// the cylinder liners, a ring of ports low in each liner lets the air in when the piston uncovers
+// them, and it sweeps up the cylinder and out through four exhaust valves in the head. So the
+// intake side is ports (see the two-stroke inputs on the engine, with crankcase_ratio 0: the
+// ports draw from the airbox) and the exhaust side is ordinary cam-driven poppet valves.
+// Turbocharged versions put a turbo ahead of the blower (feeds_blower), the blower then drawing
+// what the turbo delivers.
+
+import "engine_sim.mr"
+
+units units()
+constants constants()
+
+// The exhaust cam lobe: the four valves open about 95 deg after TDC, ahead of the intake ports,
+// so the cylinder blows down before the air comes in, and close about 60 deg past BDC
+public node detroit_exhaust_lobe {
+    input duration: 150 * units.deg;
+    input lift: 0.33 * units.inch;
+    alias output __out:
+        harmonic_cam_lobe(
+            duration_at_50_thou: duration,
+            gamma: 1.0,
+            lift: lift,
+            steps: 100,
+            cycle_angle: 360 * units.deg
+        );
+}
+
+private node detroit_no_lobe {
+    alias output __out:
+        function(10 * units.deg)
+            .add_sample(-180 * units.deg, 0.0)
+            .add_sample(180 * units.deg, 0.0);
+}
+
+// A camshaft with nothing on it: the intake side is ports (one placeholder lobe per cylinder, up
+// to eight per bank)
+public node detroit_no_cam {
+    alias output __out: _cam;
+    camshaft_parameters params(advance: 0.0, base_radius: 0.75 * units.inch)
+    camshaft _cam(params, lobe_profile: detroit_no_lobe())
+    _cam.add_lobe(0.0).add_lobe(0.0).add_lobe(0.0).add_lobe(0.0)
+        .add_lobe(0.0).add_lobe(0.0).add_lobe(0.0).add_lobe(0.0)
+}
+
+// A bank's head: four exhaust valves per cylinder, no intake valves
+public node detroit_head {
+    input exhaust_camshaft;
+    input chamber_volume;
+    input flow_attenuation: 1.0;   // The four valves' combined flow, as a share of the table
+    input exhaust_runner_volume: 150.0 * units.cc;
+    input exhaust_runner_cross_section_area: 2.25 * units.inch * 2.25 * units.inch;
+    input flip_display: false;
+    alias output __out: head;
+
+    function no_flow(50 * units.thou)
+    no_flow.add_flow_sample(0, 0).add_flow_sample(50, 0)
+
+    // Four 1.1" valves together (cfm at 28" of water against lift in thousandths)
+    function exhaust_flow(50 * units.thou)
+    exhaust_flow
+        .add_flow_sample(0, 0 * flow_attenuation)
+        .add_flow_sample(50, 70 * flow_attenuation)
+        .add_flow_sample(100, 135 * flow_attenuation)
+        .add_flow_sample(150, 195 * flow_attenuation)
+        .add_flow_sample(200, 245 * flow_attenuation)
+        .add_flow_sample(250, 280 * flow_attenuation)
+        .add_flow_sample(300, 300 * flow_attenuation)
+        .add_flow_sample(350, 310 * flow_attenuation)
+        .add_flow_sample(400, 312 * flow_attenuation)
+
+    generic_cylinder_head head(
+        chamber_volume: chamber_volume,
+        intake_runner_volume: 200.0 * units.cc,
+        intake_runner_cross_section_area: 3.0 * units.inch * 3.0 * units.inch,
+        exhaust_runner_volume: exhaust_runner_volume,
+        exhaust_runner_cross_section_area: exhaust_runner_cross_section_area,
+        intake_port_flow: no_flow,
+        exhaust_port_flow: exhaust_flow,
+        valvetrain: standard_valvetrain(
+            intake_camshaft: detroit_no_cam(),
+            exhaust_camshaft: exhaust_camshaft
+        ),
+        flip_display: flip_display
+    )
+}
+
+// A loaded tractor-trailer and a ten-speed Road Ranger
+public node detroit_truck {
+    input mass: 30000 * units.lb;
+    alias output __out:
+        vehicle(
+            mass: mass,
+            drag_coefficient: 0.7,
+            cross_sectional_area: (100 * units.inch) * (140 * units.inch),
+            diff_ratio: 4.11,
+            tire_radius: 20 * units.inch,
+            rolling_resistance: 1500 * units.N
+        );
+}
+
+public node detroit_transmission {
+    input max_clutch_torque: 2500 * units.lb_ft;
+    alias output __out:
+        transmission(max_clutch_torque: max_clutch_torque)
+        .add_gear(12.94)
+        .add_gear(9.29)
+        .add_gear(6.75)
+        .add_gear(4.90)
+        .add_gear(3.62)
+        .add_gear(2.64)
+        .add_gear(1.90)
+        .add_gear(1.38)
+        .add_gear(1.00)
+        .add_gear(0.74);
+}

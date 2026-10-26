@@ -18,6 +18,7 @@ namespace es_script {
         ExhaustSystem *generate(EngineContext *context) {
             ExhaustSystem *exhaust = context->getExhaust(this);
             ExhaustSystem::Parameters parameters = m_parameters;
+            parameters.manifoldRelativeSound = m_manifoldRelativeSound;
             parameters.impulseResponse = m_impulseResponse->generate(context);
 
             exhaust->initialize(parameters);
@@ -35,6 +36,9 @@ namespace es_script {
             addInput("audio_volume", &m_parameters.audioVolume);
             addInput("velocity_decay", &m_parameters.velocityDecay);
             addInput("impulse_response", &m_impulseResponse, InputTarget::Type::Object);
+            addInput("manifold_relative_sound", &m_manifoldRelativeSound);
+            addInput("manifold_relative_sound_idle", &m_parameters.manifoldRelativeSoundIdle);
+            addInput("drone_filter", &m_parameters.droneFilter);
 
             ObjectReferenceNode<ExhaustSystemNode>::registerInputs();
         }
@@ -47,6 +51,7 @@ namespace es_script {
         }
 
         ImpulseResponseNode *m_impulseResponse = nullptr;
+        double m_manifoldRelativeSound = 0;
         ExhaustSystem::Parameters m_parameters;
     };
 

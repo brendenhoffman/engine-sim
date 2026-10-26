@@ -68,6 +68,9 @@ class Intake : public Part {
         void setForcedInduction(ForcedInduction *forcedInduction);
         ForcedInduction *getForcedInduction() const { return m_forcedInduction; }
 
+        // Diesels inject their fuel into the cylinders: the intake carries plain air
+        void setDirectInjection(bool on) { m_directInjection = on; }
+
         GasSystem m_system;
         double m_throttle;
 
@@ -88,6 +91,7 @@ class Intake : public Part {
 
         GasSystem m_atmosphere;
         ForcedInduction *m_forcedInduction = nullptr;
+        bool m_directInjection = false;
 };
 
 #endif /* ATG_ENGINE_SIM_INTAKE_H */

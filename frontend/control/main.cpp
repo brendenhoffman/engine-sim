@@ -332,6 +332,14 @@ void drawPanel(SDL_Window *window, ControlClient &client, SettingsEditor &editor
             std::snprintf(rpmText, sizeof(rpmText), "%.0f rpm", rpm);
             ImGui::ProgressBar(static_cast<float>(std::min(rpm / redline, 1.0)), ImVec2(-FLT_MIN, 0), rpmText);
             boostGauge(engine);
+            if (field(engine, "has_jake_brake", false)) {
+                editor.checkbox("Jake brake", "/jake_brake");
+                if (field(engine, "jake_brake_active", false)) {
+                    ImGui::SameLine();
+                    ImGui::TextColored(Muted, "(braking)");
+                }
+                help("The diesel's compression-release engine brake: off throttle it dumps each cylinder's compressed air at the top of the stroke. The loud brap of trucks slowing down.");
+            }
 
             const double load = field(performance, "load", 0.0);
             ImGui::TextColored(load > 0.9 ? Red : Muted, "%d Hz simulation, %.0f%% of a CPU core",

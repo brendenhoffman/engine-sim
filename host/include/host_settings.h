@@ -23,6 +23,9 @@ struct HostSettings {
     double levelerRelease = 0.15;
     // Turbo and supercharger sounds (whine, hiss, blow-off, flutter) relative to the engine
     double turboVolume = 1.0;
+    // A diesel's compression-release brake, when it has one (the cab switch). Off by default:
+    // it braps on every lift, free revs included
+    bool jakeBrake = false;
     BeamBridge::Settings bridge;
 
     nlohmann::json toJson() const;

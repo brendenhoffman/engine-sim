@@ -128,6 +128,15 @@ void CombustionChamber::initialize(const Parameters &params) {
         1.0,
         0.0);
 
+    // A crankcase-scavenged two-stroke's crankcase, primed with fresh charge
+    if (hasCrankcase()) {
+        const double area = constants::pi * m_head->getCylinderBank()->getBore() * m_head->getCylinderBank()->getBore() / 4;
+        const double swept = area * 2 * m_piston->getRod()->getCrankshaft()->getThrow();
+        const double ratio = std::max(m_engine->getTwoStroke().crankcaseRatio, 1.05);
+        m_crankcase.initialize(units::pressure(1.0, units::atm), swept / (ratio - 1) + swept, units::celcius(25.0), intake->freshMix());
+        m_crankcase.setGeometry(std::sqrt(area), std::sqrt(area), 1.0, 0.0);
+    }
+
     // A rotor's second and third faces share the first face's pipes
     CombustionChamber *owner = nullptr;
     if (params.PipeResolution > 0 && m_rotorFace && m_piston->getCylinderIndex() > 0) {
@@ -163,10 +172,36 @@ void CombustionChamber::initialize(const Parameters &params) {
         pipe.length = overallExhaustRunnerLength;
         pipe.areas = { exhaustRunnerCrossSection };
         pipe.cells = std::max(4, static_cast<int>(std::lround(pipe.length * params.PipeResolution)));
+        const Engine::Parameters::TwoStroke &ts = m_engine->getTwoStroke();
+        if (ts.bellyDiameter > 0) {
+            // A two-stroke's expansion chamber: header, diffuser cone, belly, baffle cone, stinger
+            const double sections[5] = { ts.headerLength, ts.diffuserLength, ts.bellyLength, ts.baffleLength, ts.stingerLength };
+            const double ends[5][2] = {
+                { ts.headerDiameter, ts.headerDiameter }, { ts.headerDiameter, ts.bellyDiameter },
+                { ts.bellyDiameter, ts.bellyDiameter }, { ts.bellyDiameter, ts.stingerDiameter },
+                { ts.stingerDiameter, ts.stingerDiameter } };
+            pipe.length = sections[0] + sections[1] + sections[2] + sections[3] + sections[4];
+            pipe.cells = std::max(8, static_cast<int>(std::lround(pipe.length * params.PipeResolution)));
+            pipe.areas.resize(pipe.cells);
+            for (int c = 0; c < pipe.cells; ++c) {
+                double x = (c + 0.5) * pipe.length / pipe.cells;
+                double d = ts.stingerDiameter;
+                for (int k = 0; k < 5; ++k) {
+                    if (x <= sections[k] || k == 4) {
+                        const double f = (sections[k] > 0) ? std::clamp(x / sections[k], 0.0, 1.0) : 1.0;
+                        d = ends[k][0] + (ends[k][1] - ends[k][0]) * f;
+                        break;
+                    }
+                    x -= sections[k];
+                }
+                pipe.areas[c] = constants::pi * d * d / 4;
+            }
+        }
         m_exhaustPipe.initialize(pipe);
 
         m_intakePipe.connect(0, &intake->m_system);
-        m_intakePortConnection = m_intakePipe.connect(1, &m_system);
+        // A crankcase-scavenged two-stroke breathes into its crankcase
+        m_intakePortConnection = m_intakePipe.connect(1, hasCrankcase() ? &m_crankcase : &m_system);
         m_exhaustPortConnection = m_exhaustPipe.connect(0, &m_system);
         m_exhaustPipe.connect(1, exhaust->getSystem());
         m_intakePipeRef = &m_intakePipe;
@@ -175,7 +210,14 @@ void CombustionChamber::initialize(const Parameters &params) {
     }
 }
 
+// While the Jake brake works its releases are heard smoothed: the charge bleeds out through a
+// cracked-open valve, a chug rather than the sharp ring a full blowdown gives
 double CombustionChamber::exhaustSoundSignal() const {
+    const double raw = rawExhaustSoundSignal();
+    return raw + m_jakeBlend * (m_jakeSound - raw);
+}
+
+double CombustionChamber::rawExhaustSoundSignal() const {
     if (hasPipes()) {
         // A shared pipe already carries every face's pulses; it's heard once, through its owner
         if (!m_pipeOwner) return 0;
@@ -184,7 +226,15 @@ double CombustionChamber::exhaustSoundSignal() const {
         return (m_exhaustPipe.cellPressure(last) - units::pressure(1.0, units::atm))
             + 0.1 * 0.5 * m_exhaustPipe.cellDensity(last) * u * u;
     }
-    return (m_exhaustRunnerAndPrimary.pressure() - units::pressure(1.0, units::atm))
+    // Against the manifold rather than the open air, when the exhaust system asks: behind a
+    // turbo the manifold sits well above ambient and smears each cylinder's blowdown into a
+    // plateau; what gets through the turbine is the pulses on top of it
+    ExhaustSystem *exhaust = m_head->getExhaustSystem(m_piston->getCylinderIndex());
+    const double ambient = units::pressure(1.0, units::atm);
+    // By load: a diesel's fueling share, or the pedal
+    const double load = m_fuel->isCompressionIgnition() ? m_engine->getDieselFueling() : m_engine->getSpeedControl();
+    const double reference = ambient + exhaust->manifoldRelativeSoundAt(std::clamp(load, 0.0, 1.0)) * (exhaust->getSmoothedPressure() - ambient);
+    return (m_exhaustRunnerAndPrimary.pressure() - reference)
         + 0.1 * m_exhaustRunnerAndPrimary.dynamicPressure(1.0, 0.0)
         + 0.1 * m_exhaustRunnerAndPrimary.dynamicPressure(-1.0, 0.0);
 }
@@ -278,6 +328,19 @@ bool CombustionChamber::popLitLastFrame() {
 }
 
 void CombustionChamber::ignite() {
+    {
+        static const bool trace = std::getenv("ENGINE_SIM_2T_TRACE") != nullptr;
+        if (trace && isTwoStroke()) {
+            std::fprintf(stderr, "2t ignite: cyl %.0f kPa %.0f K  trapped %.3f mmol, fuel %.2f mg, o2 %.2f mmol, burned-gas share %.2f  lit %d\n",
+                m_system.pressure() / 1000, m_system.temperature(), m_system.n() * 1000, m_system.n_fuel() * m_fuel->getMolecularMass() * 1e6,
+                m_system.n_o2() * 1000, std::clamp((m_system.mix().p_inert - 3 * m_system.mix().p_o2) / std::max(1e-9, 1 - m_system.mix().p_fuel), 0.0, 1.0), m_lit);
+        }
+    }
+    if (m_fuel->isCompressionIgnition()) {
+        injectDiesel();
+        return;
+    }
+
     if (!m_lit) {
         if (m_system.mix().p_fuel == 0) return;
 
@@ -306,6 +369,14 @@ void CombustionChamber::ignite() {
             ++m_misfires;
             m_lastBurnCompletion = 0;
             return;
+        }
+        if (m_fuel->getMisfireResidual() > 0) {
+            const double z = std::normal_distribution<double>(0.0, 1.0)(m_random);
+            if (m_flameEvent.residualFraction * std::exp(m_fuel->getMisfireSpread() * z) > m_fuel->getMisfireResidual()) {
+                ++m_misfires;
+                m_lastBurnCompletion = 0;
+                return;
+            }
         }
         m_lastBurnCompletion = m_flameEvent.percentageLit;
 
@@ -367,6 +438,35 @@ void CombustionChamber::update(double dt) {
 
     m_intakeFlowRate = m_head->intakeFlowRate(m_piston->getCylinderIndex());
     m_exhaustFlowRate = m_head->exhaustFlowRate(m_piston->getCylinderIndex());
+    if (isTwoStroke()) updateTwoStrokePorts(dt);
+
+    // Jake brake: off throttle, crack the exhaust valve open at the top of compression and hold it
+    // through the expansion stroke, so the compressed air bleeds out (a chug, through the small
+    // opening) instead of pushing the piston back down
+    const double volume = getVolume();
+    m_volumeMin = std::min(m_volumeMin, volume);
+    m_volumeMax = std::max(m_volumeMax, volume);
+    if (m_engine->isJakeBrakeActive() && !m_rotorFace) {
+        const double swept = m_volumeMax - m_volumeMin;
+        // At the top of compression: the piston has done its work squeezing the charge, and
+        // letting it go now means none comes back on the way down
+        if (!m_jakeOpen && volume >= m_lastVolume && volume < m_volumeMin + 0.05 * swept
+            && m_system.pressure() > units::pressure(5.0, units::atm)) {
+            m_jakeOpen = true;
+        }
+        else if (m_jakeOpen && volume > m_volumeMin + 0.95 * swept) {
+            m_jakeOpen = false;
+        }
+        if (m_jakeOpen) m_exhaustFlowRate = std::max(m_exhaustFlowRate, m_engine->getJakeBrakeFlow());
+    }
+    else {
+        m_jakeOpen = false;
+    }
+    m_lastVolume = volume;
+    if (m_engine->getJakeBrakeFlow() > 0) {
+        m_jakeSound += std::min(1.0, dt * 2 * constants::pi * 100.0) * (rawExhaustSoundSignal() - m_jakeSound);
+        m_jakeBlend += std::clamp((m_engine->isJakeBrakeActive() ? 1.0 : 0.0) - m_jakeBlend, -dt / 0.1, dt / 0.1);
+    }
 
     // Valve/port openings go to the pipes before any of them steps (shared pipes step once,
     // through their owner, with every face's opening in place)
@@ -410,6 +510,7 @@ void CombustionChamber::flow(double dt) {
     const double start_n = m_system.n();
 
     double intakeFlow = 0, exhaustFlow = 0;
+    double chargeFlow = 0;   // Into the cylinder (on a crankcase two-stroke, through the transfers)
     if (hasPipes()) {
         // Plenum -> intake pipe -> chamber -> exhaust pipe -> collector; waves in the pipes
         // The runner meets the plenum, and the primary the collector, as open pipe ends (set in
@@ -423,6 +524,7 @@ void CombustionChamber::flow(double dt) {
         }
         intakeFlow = -m_intakePipeRef->takeFlow(1, m_intakePortConnection);
         exhaustFlow = m_exhaustPipeRef->takeFlow(0, m_exhaustPortConnection);
+        if (hasCrankcase()) transferFlow(dt, &chargeFlow);
     }
     else {
         GasSystem::FlowParameters flowParams;
@@ -445,8 +547,9 @@ void CombustionChamber::flow(double dt) {
         flowParams.direction_x = 1.0;
         flowParams.direction_y = 0.0;
         flowParams.system_0 = &m_intakeRunnerAndManifold;
-        flowParams.system_1 = &m_system;
+        flowParams.system_1 = hasCrankcase() ? &m_crankcase : &m_system;
         intakeFlow = GasSystem::flow(flowParams);
+        if (hasCrankcase()) transferFlow(dt, &chargeFlow);
 
         m_intakeRunnerAndManifold.dissipateExcessVelocity();
         m_system.dissipateExcessVelocity();
@@ -477,9 +580,24 @@ void CombustionChamber::flow(double dt) {
         m_exhaustRunnerAndPrimary.updateVelocity(dt, exhaust->getVelocityDecay());
     }
 
-    if (std::abs(intakeFlow) > 1E-9 && m_lit) {
+    if (!hasCrankcase()) chargeFlow = intakeFlow;
+    {
+        static const bool trace = std::getenv("ENGINE_SIM_2T_TRACE") != nullptr;
+        static int count = 0;
+        if (trace && isTwoStroke() && (++count % 40) == 0) {
+            const double a = angleFromTdc(pistonTravel(), pistonTravel() >= m_lastPistonTravel - 1e-9) * 180 / constants::pi;
+            std::fprintf(stderr, "2t %6.1f deg  cyl %6.1f kPa  cc %6.1f kPa  inlet %.4f transfer %.4f exhaust %.4f  in %+.2e tr %+.2e ex %+.2e  fuel %.3f\n",
+                a, m_system.pressure() / 1000, (hasCrankcase() ? m_crankcase : m_head->getIntake(m_piston->getCylinderIndex())->m_system).pressure() / 1000, m_intakeFlowRate, m_transferFlowRate, m_exhaustFlowRate,
+                intakeFlow, chargeFlow, exhaustFlow, m_system.mix().p_fuel);
+        }
+    }
+    if (std::abs(chargeFlow) > 1E-9 && m_lit) {
         m_lit = false;
     }
+    if (std::abs(chargeFlow) > 1E-9 && m_diesel.active) {
+        m_diesel.active = false; // Whatever's left goes out with the exhaust
+    }
+    if (m_diesel.active) burnDiesel(dt);
 
     m_exhaustFlow = exhaustFlow;
     m_lastTimestepTotalExhaustFlow += exhaustFlow;
@@ -565,6 +683,247 @@ void CombustionChamber::flow(double dt) {
     }
 }
 
+bool CombustionChamber::isTwoStroke() const {
+    return m_engine != nullptr && m_engine->getTwoStroke().enabled() && !m_rotorFace;
+}
+
+bool CombustionChamber::hasCrankcase() const {
+    return isTwoStroke() && m_engine->getTwoStroke().crankcaseRatio > 0;
+}
+
+// Piston travel down from TDC at a crank angle after TDC (slider-crank)
+double CombustionChamber::travelAt(double a) const {
+    const double r = m_piston->getRod()->getCrankshaft()->getThrow();
+    const double l = m_piston->getRod()->getLength();
+    const double s = r * std::sin(a);
+    return r * (1 - std::cos(a)) + l - std::sqrt(std::max(l * l - s * s, 0.0));
+}
+
+double CombustionChamber::pistonTravel() const {
+    const CylinderBank *bank = m_head->getCylinderBank();
+    const double area = constants::pi * bank->getBore() * bank->getBore() / 4;
+    const double stroke = 2 * m_piston->getRod()->getCrankshaft()->getThrow();
+    return std::clamp((getVolume() - m_head->getCombustionChamberVolume()) / area, 0.0, stroke);
+}
+
+// Crank angle after TDC from the piston's travel and which way it's going
+double CombustionChamber::angleFromTdc(double travel, bool falling) const {
+    double lo = 0, hi = constants::pi;
+    for (int i = 0; i < 30; ++i) {
+        const double mid = 0.5 * (lo + hi);
+        if (travelAt(mid) < travel) lo = mid; else hi = mid;
+    }
+    const double a = 0.5 * (lo + hi);
+    return falling ? a : 2 * constants::pi - a;
+}
+
+void CombustionChamber::updateTwoStrokePorts(double dt) {
+    const Engine::Parameters::TwoStroke &ts = m_engine->getTwoStroke();
+    const double stroke = 2 * m_piston->getRod()->getCrankshaft()->getThrow();
+    const double travel = pistonTravel();
+    const bool falling = travel >= m_lastPistonTravel;
+    m_lastPistonTravel = travel;
+
+    // A port centred on BDC, open for `duration`: its top sits where the crown is at half that
+    // before BDC, and its open area grows with how far below that the crown has gone
+    auto bdcPort = [&](double duration) {
+        const double top = travelAt(constants::pi - duration / 2);
+        return (travel > top) ? (travel - top) / std::max(stroke - top, 1e-6) : 0.0;
+    };
+
+    if (ts.exhaustPortDuration > 0) {
+        double duration = ts.exhaustPortDuration;
+        if (ts.exhaustPortDurationLow > 0 && ts.powerValveEnd > ts.powerValveStart) {
+            const double target = std::clamp((std::abs(m_engine->getSpeed()) - ts.powerValveStart)
+                / (ts.powerValveEnd - ts.powerValveStart), 0.0, 1.0);
+            m_powerValve += (target - m_powerValve) * std::min(1.0, dt / 0.15);
+            duration = ts.exhaustPortDurationLow + (ts.exhaustPortDuration - ts.exhaustPortDurationLow) * m_powerValve;
+        }
+        m_exhaustFlowRate = ts.exhaustPortFlow * bdcPort(duration);
+    }
+    m_transferFlowRate = ts.transferPortFlow * bdcPort(ts.transferPortDuration);
+
+    // Scavenging: while the transfers flow and the exhaust is open, the fresh charge pushes
+    // the burned gas out ahead of it, so what leaves is mostly burned gas until the cylinder is
+    // mostly fresh: fresh share f^(1 + quality) of the gas going out, rather than f
+    if (m_transferFlowRate > 0 && m_exhaustFlowRate > 0 && ts.scavengingQuality > 0) {
+        const GasSystem::Mix mix = m_system.mix();
+        const double burned = std::clamp((mix.p_inert - 3 * mix.p_o2) / std::max(1e-9, 1 - mix.p_fuel), 0.0, 1.0);
+        const double fresh = 1 - burned;
+        const double freshOut = std::pow(fresh, 1 + ts.scavengingQuality);
+        // Fresh charge is the transfers' (the crankcase's, or the intake's) mix; the burned gas
+        // whatever makes up the rest of the cylinder's
+        const GasSystem::Mix f = hasCrankcase() ? m_crankcase.mix() : m_head->getIntake(m_piston->getCylinderIndex())->freshMix();
+        GasSystem::Mix b;
+        if (burned > 1e-6) {
+            b.p_fuel = std::max(0.0, (mix.p_fuel - fresh * f.p_fuel) / burned);
+            b.p_o2 = std::max(0.0, (mix.p_o2 - fresh * f.p_o2) / burned);
+            b.p_inert = std::max(0.0, (mix.p_inert - fresh * f.p_inert) / burned);
+        }
+        else {
+            b = mix;
+        }
+        GasSystem::Mix out;
+        out.p_fuel = freshOut * f.p_fuel + (1 - freshOut) * b.p_fuel;
+        out.p_o2 = freshOut * f.p_o2 + (1 - freshOut) * b.p_o2;
+        out.p_inert = freshOut * f.p_inert + (1 - freshOut) * b.p_inert;
+        const double total = out.p_fuel + out.p_o2 + out.p_inert;
+        if (total > 0) { out.p_fuel /= total; out.p_o2 /= total; out.p_inert /= total; }
+        m_system.setOutflowMix(out);
+    }
+    else {
+        m_system.clearOutflowMix();
+    }
+
+    if (!hasCrankcase()) {
+        // A blower-fed airbox: the transfers (intake ports) draw straight from the intake
+        m_intakeFlowRate = m_transferFlowRate;
+        return;
+    }
+
+    // The piston rising leaves room under it
+    const CylinderBank *bank = m_head->getCylinderBank();
+    const double area = constants::pi * bank->getBore() * bank->getBore() / 4;
+    const double swept = area * stroke;
+    const double ratio = std::max(ts.crankcaseRatio, 1.05);
+    m_crankcase.setVolume(swept / (ratio - 1) + swept - area * travel);
+
+    double open = 0;
+    if (ts.inletType == 1) {
+        // Reed: pushed open by the pressure across it, a little behind
+        const double upstream = (m_intakePipeRef != nullptr)
+            ? m_intakePipeRef->cellPressure(m_intakePipeRef->cellCount() - 1)
+            : m_intakeRunnerAndManifold.pressure();
+        const double target = std::clamp((upstream - m_crankcase.pressure()) / ts.reedPressure, 0.0, 1.0);
+        m_reed += (target - m_reed) * std::min(1.0, dt / ts.reedResponse);
+        open = m_reed;
+    }
+    else if (ts.inletType == 2) {
+        // Rotary disc: open between two crank angles, with short ramps as its edge sweeps the port
+        const double a = angleFromTdc(travel, falling);
+        const double span = std::fmod(ts.discClose - ts.discOpen + 4 * constants::pi, 2 * constants::pi);
+        const double into = std::fmod(a - ts.discOpen + 4 * constants::pi, 2 * constants::pi);
+        const double ramp = 15 * constants::pi / 180;
+        if (into < span) open = std::clamp(std::min(into, span - into) / ramp, 0.0, 1.0);
+    }
+    else {
+        // Piston port: the skirt uncovers it around TDC
+        const double bottom = travelAt(ts.inletDuration / 2);
+        open = (travel < bottom) ? (bottom - travel) / std::max(bottom, 1e-6) : 0.0;
+    }
+    m_intakeFlowRate = ts.inletFlow * open;
+}
+
+// Crankcase to cylinder through the transfers
+void CombustionChamber::transferFlow(double dt, double *transfer) {
+    *transfer = 0;
+    if (m_transferFlowRate <= 0) return;
+    GasSystem::FlowParameters flowParams;
+    flowParams.dt = dt;
+    flowParams.k_flow = m_transferFlowRate;
+    flowParams.crossSectionArea_0 = 0;
+    flowParams.crossSectionArea_1 = 0;
+    flowParams.direction_x = 0.0;
+    flowParams.direction_y = 1.0;
+    flowParams.system_0 = &m_crankcase;
+    flowParams.system_1 = &m_system;
+    *transfer = GasSystem::flow(flowParams);
+}
+
+void CombustionChamber::injectDiesel() {
+    const Engine::Parameters::Diesel &pump = m_engine->getDiesel();
+    const double share = m_engine->getDieselFueling();
+    const double o2PerFuel = m_fuel->getMolecularAfr();
+    const double smokeLimit = pump.maxEquivalence * m_system.n_o2() / o2PerFuel;
+    const double fuel = (pump.maxFuelMass > 0)
+        ? std::min(share * pump.maxFuelMass / m_fuel->getMolecularMass(), smokeLimit)
+        : share * smokeLimit;
+    // Uneven injectors and shot-to-shot variation
+    std::normal_distribution<double> normal(0.0, 1.0);
+    if (m_injectorBias <= 0) m_injectorBias = std::max(0.5, 1 + m_fuel->getInjectorSpread() * normal(m_random));
+    const double shot = std::max(0.3, 1 + m_fuel->shotVariationAt(share) * normal(m_random));
+    m_delayScale = std::exp(m_fuel->getDelayVariation() * normal(m_random));
+    const double delivered = std::min(fuel * m_injectorBias * shot, smokeLimit * 1.1);
+    const double phi = (m_system.n_o2() > 0) ? delivered * o2PerFuel / m_system.n_o2() : 0.0;
+    if (fuel <= 0) {
+        m_diesel.active = false;
+        return;
+    }
+
+    // The fuel goes in as a liquid near 330 K and takes its heat of vaporization from the air
+    GasSystem::Mix pure;
+    pure.p_fuel = 1;
+    pure.p_inert = 0;
+    pure.p_o2 = 0;
+    constexpr double FuelT = 330.0;
+    constexpr double Vaporization = 270e3; // J/kg
+    m_system.gainN(delivered, m_system.energyPerMol(FuelT, pure), pure);
+    m_system.changeEnergy(-delivered * m_fuel->getMolecularMass() * Vaporization);
+
+    m_diesel = DieselEvent();
+    m_diesel.active = true;
+    m_diesel.injected = delivered;
+    m_diesel.equivalence = phi;
+}
+
+void CombustionChamber::burnDiesel(double dt) {
+    Crankshaft *shaft = m_engine->getOutputCrankshaft();
+    const double rpm = std::max(std::abs(m_engine->getRpm()), 100.0);
+
+    if (!m_diesel.burning) {
+        // Ignition delay (Hardenberg & Hase), in crank degrees, from the charge as it is now;
+        // integrated so a charge that's still heating up lights when it's ready
+        m_diesel.elapsed += dt;
+        const double p = m_system.pressure() / 1e5;   // bar
+        const double T = m_system.temperature();
+        if (p > 12.5 && T > 300) {
+            const double activation = 618840.0 / (m_fuel->getCetaneNumber() + 25);
+            const double meanSpeed = calculateMeanPistonSpeed();
+            const double degrees = (0.36 + 0.22 * meanSpeed)
+                * std::exp(activation * (1 / (8.3143 * T) - 1 / 17190.0) + std::pow(21.2 / (p - 12.4), 0.63));
+            const double seconds = m_delayScale * degrees / (6 * rpm);
+            m_diesel.delay += dt / seconds;
+        }
+        if (m_diesel.delay >= 1) {
+            m_diesel.burning = true;
+            m_diesel.startAngle = shaft->getCycleAngle();
+            // Watson: the longer the delay, the more fuel has mixed and burns at once
+            const double delayMs = std::max(m_diesel.elapsed * 1000, 0.05);
+            m_diesel.premixed = std::clamp(
+                1 - 0.926 * std::pow(std::max(m_diesel.equivalence, 0.01), 0.37) / std::pow(delayMs, 0.26), 0.05, 0.9);
+            m_litLastFrame = true;
+            static const bool trace = std::getenv("ENGINE_SIM_DIESEL_TRACE") != nullptr;
+            if (trace) {
+                std::fprintf(stderr, "diesel lit: bank %d cyl %d  %.0f rpm  delay %.2f ms  premixed %.2f  phi %.2f  p %.0f bar  T %.0f K  fuel %.1f mg\n",
+                    m_head->getCylinderBank()->getIndex(), m_piston->getCylinderIndex(),
+                    rpm, m_diesel.elapsed * 1000, m_diesel.premixed, m_diesel.equivalence, m_system.pressure() / 1e5, m_system.temperature(),
+                    m_diesel.injected * m_fuel->getMolecularMass() * 1e6);
+            }
+        }
+        return;
+    }
+
+    // Burned so far: the premixed spike (a few degrees) and the diffusion burn (as fast as the
+    // fuel mixes: longer at speed and with more fuel), each a Wiebe curve
+    const double sinceStart = std::fmod(shaft->getCycleAngle() - m_diesel.startAngle + 2 * shaft->getCycleLength(),
+        shaft->getCycleLength()) * 180 / constants::pi;
+    const double premixedDuration = 6 + 4 * rpm / 2000;
+    const double diffusionDuration = 30 + 20 * rpm / 2000 + 20 * m_diesel.equivalence;
+    auto wiebe = [](double x, double m) { return 1 - std::exp(-6.9 * std::pow(std::clamp(x, 0.0, 2.0), m + 1)); };
+    const double burnedShare = m_diesel.premixed * wiebe(sinceStart / premixedDuration, 2.0)
+        + (1 - m_diesel.premixed) * wiebe(sinceStart / diffusionDuration, 0.5);
+    const double target = burnedShare * m_diesel.injected * m_fuel->getMaxBurningEfficiency();
+    const double step = target - m_diesel.burned;
+    if (step > 0) {
+        const double burned = m_system.burnFuel(step, m_fuel->getMolecularAfr());
+        const double mass = burned * m_fuel->getMolecularMass();
+        m_system.changeEnergy(mass * m_fuel->getEnergyDensity());
+        m_nBurntFuel += mass;
+        m_diesel.burned = target;
+    }
+    if (burnedShare > 0.999) m_diesel.active = false;
+}
+
 double CombustionChamber::lastEventAfr() const {
     const double totalFuel = m_flameEvent.globalMix.p_fuel * m_flameEvent.total_n;
     const double totalOxygen = m_flameEvent.globalMix.p_o2 * m_flameEvent.total_n;
@@ -622,7 +981,7 @@ void CombustionChamber::apply(atg_scs::SystemState *system) {
         // Virtual work: the gas does P dV of work as the shaft turns, so the torque in the
         // engine's direction of rotation is P dV/dphi. The cycle angle runs against the
         // body's theta, hence the sign. (A uniform pressure on all three faces cancels out.)
-        const double pressureDifferential = m_system.pressure() - m_crankcasePressure;
+        const double pressureDifferential = m_system.pressure() - crankcasePressure();
         const int shaft = m_engine->getOutputCrankshaft()->m_body.index;
         system->t[shaft] += -pressureDifferential * rotorVolumeDerivative();
         return;
@@ -634,7 +993,7 @@ void CombustionChamber::apply(atg_scs::SystemState *system) {
     const double v_s =
         v_x * bank->getDx() + v_y * bank->getDy();
 
-    const double pressureDifferential = m_system.pressure() - m_crankcasePressure;
+    const double pressureDifferential = m_system.pressure() - crankcasePressure();
     const double force = -area * pressureDifferential;
 
     if (std::isnan(force) || std::isinf(force)) {
@@ -645,7 +1004,8 @@ void CombustionChamber::apply(atg_scs::SystemState *system) {
     const double abs_v_s = std::fmin(std::abs(v_s), limit);
     const double attenuation = abs_v_s / limit;
 
-    const double F = calculateFrictionForce(v_s) * attenuation;
+    // An engine with the mean-effective-pressure friction model has it all on the crank
+    const double F = m_engine->getFriction().enabled ? 0.0 : calculateFrictionForce(v_s) * attenuation;
     const double F_fric = (v_s > 0)
         ? -F
         : F;

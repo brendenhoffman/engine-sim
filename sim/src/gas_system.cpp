@@ -177,7 +177,19 @@ void GasSystem::changeTemperature(double dT, double n) {
     m_state.E_k += n * (m_heat.energy(T + dT) - m_heat.energy(T));
 }
 
-double GasSystem::react(double n, const Mix &mix) {
+double GasSystem::burnFuel(double nFuel, double o2PerFuel) {
+    if (n() <= 0 || nFuel <= 0) return 0;
+    const double fuel = std::fmin(nFuel, std::fmin(n_fuel(), n_o2() / o2PerFuel));
+    if (fuel <= 0) return 0;
+    // Burn exactly that: a mix of fuel and its oxygen
+    Mix mix;
+    mix.p_fuel = 1 / (1 + o2PerFuel);
+    mix.p_o2 = o2PerFuel / (1 + o2PerFuel);
+    mix.p_inert = 0;
+    return react(fuel * (1 + o2PerFuel), mix, o2PerFuel);
+}
+
+double GasSystem::react(double n, const Mix &mix, double o2PerFuel) {
     const double l_n_fuel = mix.p_fuel * n;
     const double l_n_o2 = mix.p_o2 * n;
 
@@ -188,8 +200,9 @@ double GasSystem::react(double n, const Mix &mix) {
 
     // Assuming the following reaction:
     // 25[O2] + 2[C8H16] -> 16[CO2] + 18[H2O]
-    constexpr double ideal_o2_ratio = 25.0 / 2;
-    constexpr double ideal_fuel_ratio = 2.0 / 25;
+    // (or another fuel's oxygen per molecule, products in about the same proportion)
+    const double ideal_o2_ratio = o2PerFuel;
+    const double ideal_fuel_ratio = 1 / o2PerFuel;
     constexpr double output_input_ratio = (16.0 + 18.0) / (25 + 2);
 
     const double ideal_fuel_n = ideal_fuel_ratio * l_n_o2;
@@ -350,6 +363,23 @@ double GasSystem::loseN(double dn, double E_k_per_mol) {
     }
 
     return dn;
+}
+
+double GasSystem::loseN(double dn, double E_k_per_mol, const Mix &mix) {
+    const double n0 = m_state.n_mol;
+    const double n1 = n0 - dn;
+    if (n1 > 1e-15) {
+        auto species = [&](double mine, double theirs) { return std::max(0.0, (mine * n0 - theirs * dn) / n1); };
+        Mix next;
+        next.p_fuel = species(m_state.mix.p_fuel, mix.p_fuel);
+        next.p_o2 = species(m_state.mix.p_o2, mix.p_o2);
+        next.p_inert = species(m_state.mix.p_inert, mix.p_inert);
+        const double total = next.p_fuel + next.p_o2 + next.p_inert;
+        if (total > 0) { next.p_fuel /= total; next.p_o2 /= total; next.p_inert /= total; }
+        m_state.mix = next;
+        if (m_properties != &Properties::Ideal) updateHeatCapacity();
+    }
+    return loseN(dn, E_k_per_mol);
 }
 
 double GasSystem::gainN(double dn, double E_k_per_mol, const Mix &mix) {

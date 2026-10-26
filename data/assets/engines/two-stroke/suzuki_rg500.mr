@@ -1,0 +1,271 @@
+// Suzuki RG500 Gamma [two-stroke square four], 1985: 56 x 50.6 mm, 498 cc, rotary disc valves
+// (the charge only gets into the crankcase while a slot in the spinning disc passes the port),
+// Suzuki's AEC exhaust power valve and four expansion chambers. 95 hp at 9500 rpm and 71.5 Nm
+// at 8500. Its two crankshafts are geared together so the four fire evenly: modelled as one
+// crank firing every 90 deg.
+
+import "engine_sim.mr"
+import "themes/default.mr"
+import "two_stroke.mr"
+
+units units()
+constants constants()
+impulse_response_library ir_lib()
+
+private node wires {
+    output wire1: ignition_wire();
+    output wire2: ignition_wire();
+    output wire3: ignition_wire();
+    output wire4: ignition_wire();
+}
+
+public node suzuki_rg500 {
+    alias output __out: engine;
+
+    engine engine(
+        name: "Suzuki RG500 Gamma [two-stroke square four]",
+        starter_torque: 60 * units.lb_ft,
+        starter_speed: 600 * units.rpm,
+        redline: 10500 * units.rpm,
+        cycle_angle: 360 * units.deg,       // Two-stroke: a cycle every turn
+        real_gas: 1,
+        friction_model: 1,
+        fmep_constant: 15 * units.kPa,      // Roller bearings
+        pipe_resolution: 25,                // The expansion chamber is the engine
+        idle_rpm: 1600 * units.rpm,
+        // The idle screw, as a gentle idle control: four-stroking at idle, it needs a hand
+        idle_speed: 1600 * units.rpm,
+        idle_proportional: 0.3,
+        idle_integral: 0.2,
+        idle_max_opening: 0.035,             // Small: a big kick flares the revs and it hunts
+        idle_fuel_cut: 0.0,
+        throttle_gamma: 2.0,
+
+        // Ports, as total degrees open centred on BDC
+        exhaust_port_duration: 198 * units.deg,
+        exhaust_port_duration_low: 180 * units.deg,   // AEC shut: a lower port for the midrange
+        power_valve_start: 7500 * units.rpm,
+        power_valve_end: 9000 * units.rpm,
+        exhaust_port_flow: k_carb(380),
+        transfer_port_duration: 130 * units.deg,
+        transfer_port_flow: k_carb(330),
+        crankcase_ratio: 1.40,
+        inlet_type: 2,                      // Rotary disc valve
+        disc_open: 215 * units.deg,         // 145 deg before TDC...
+        disc_close: 75 * units.deg,         // ...to 75 after
+        inlet_flow: k_carb(320),
+
+        // The expansion chamber
+        header_length: 0.20 * units.m,
+        header_diameter: 32 * units.mm,
+        diffuser_length: 0.45 * units.m,
+        belly_diameter: 88 * units.mm,
+        belly_length: 0.09 * units.m,
+        baffle_length: 0.35 * units.m,
+        stinger_length: 0.20 * units.m,
+        stinger_diameter: 20 * units.mm,
+
+        fuel: fuel(
+            max_burning_efficiency: 1.0,
+            dilution_sensitivity: 0.3,      // Exhaust left in the charge slows the flame: at light
+            cyclic_variation: 1.0,
+            misfire_residual: 0.65,         // Too much exhaust left in the charge and it won't light: at idle
+                                            // and light throttle it misfires and four-strokes (ring-ding)
+            turbulence_to_flame_speed_ratio: two_stroke_flame(gain: 10.0)   // A small, squished chamber burns fast
+        ),
+        hf_gain: 0.01,
+        noise: 1.0,
+        jitter: 0.3,
+        simulation_frequency: 20000
+    )
+
+    wires wires()
+
+    label stroke(50.6 * units.mm)
+    label bore(56.0 * units.mm)
+    label rod_length(100 * units.mm)
+    label compression_height(18 * units.mm)
+
+    crankshaft c0(
+        throw: stroke / 2,
+        flywheel_mass: 1.5 * units.kg,
+        mass: 5.0 * units.kg,
+        friction_torque: 0.5 * units.lb_ft,
+        moment_of_inertia: 0.010,
+        position_x: 0.0,
+        position_y: 0.0,
+        tdc: constants.pi / 2
+    )
+    // A firing every quarter turn
+    rod_journal rj0(angle: 0.0)
+    rod_journal rj1(angle: 180 * units.deg)
+    rod_journal rj2(angle: 90 * units.deg)
+    rod_journal rj3(angle: 270 * units.deg)
+    c0.add_rod_journal(rj0).add_rod_journal(rj1).add_rod_journal(rj2).add_rod_journal(rj3)
+
+    piston_parameters piston_params(
+        mass: 150 * units.g,
+        compression_height: compression_height,
+        wrist_pin_position: 0.0,
+        displacement: 0.0
+    )
+    connecting_rod_parameters cr_params(
+        mass: 200 * units.g,
+        moment_of_inertia: rod_moment_of_inertia(mass: 200 * units.g, length: rod_length),
+        center_of_mass: 0.0,
+        length: rod_length
+    )
+    cylinder_bank_parameters bank_params(
+        bore: bore,
+        deck_height: stroke / 2 + rod_length + compression_height
+    )
+
+    // Four 28 mm Mikunis off a shared airbox
+    intake intake(
+        plenum_volume: 8.0 * units.L,
+        plenum_cross_section_area: 60.0 * units.cm2,
+        intake_flow_rate: k_carb(900.0),
+        runner_flow_rate: k_carb(300.0),
+        runner_length: 6.0 * units.inch,
+        idle_flow_rate: k_carb(0.0),
+        idle_throttle_plate_position: 0.9985,
+        velocity_decay: 0.5
+    )
+
+    // The silencer the stinger feeds
+    exhaust_system_parameters es_params(
+        outlet_flow_rate: k_carb(250.0),
+        primary_tube_length: 1.0 * units.inch,
+        primary_flow_rate: k_carb(300.0),
+        velocity_decay: 1.0,
+        volume: 3.0 * units.L
+    )
+    exhaust_system exhaust0(
+        es_params,
+        audio_volume: 1.0,
+        length: 20 * units.inch,
+        impulse_response: ir_lib.minimal_muffling_02
+    )
+    exhaust_system exhaust1(
+        es_params,
+        audio_volume: 1.0,
+        length: 22 * units.inch,
+        impulse_response: ir_lib.minimal_muffling_02
+    )
+    exhaust_system exhaust2(
+        es_params,
+        audio_volume: 1.0,
+        length: 21 * units.inch,
+        impulse_response: ir_lib.minimal_muffling_02
+    )
+    exhaust_system exhaust3(
+        es_params,
+        audio_volume: 1.0,
+        length: 23 * units.inch,
+        impulse_response: ir_lib.minimal_muffling_02
+    )
+
+    cylinder_bank b0(bank_params, angle: 0 * units.deg)
+    b0
+        .add_cylinder(
+            piston: piston(piston_params, blowby: k_28inH2O(0.05)),
+            connecting_rod: connecting_rod(cr_params),
+            rod_journal: rj0,
+            intake: intake,
+            exhaust_system: exhaust0,
+            ignition_wire: wires.wire1
+        )
+        .add_cylinder(
+            piston: piston(piston_params, blowby: k_28inH2O(0.05)),
+            connecting_rod: connecting_rod(cr_params),
+            rod_journal: rj1,
+            intake: intake,
+            exhaust_system: exhaust1,
+            ignition_wire: wires.wire2,
+            sound_attenuation: 0.95
+        )
+        .add_cylinder(
+            piston: piston(piston_params, blowby: k_28inH2O(0.05)),
+            connecting_rod: connecting_rod(cr_params),
+            rod_journal: rj2,
+            intake: intake,
+            exhaust_system: exhaust2,
+            ignition_wire: wires.wire3,
+            sound_attenuation: 0.9
+        )
+        .add_cylinder(
+            piston: piston(piston_params, blowby: k_28inH2O(0.05)),
+            connecting_rod: connecting_rod(cr_params),
+            rod_journal: rj3,
+            intake: intake,
+            exhaust_system: exhaust3,
+            ignition_wire: wires.wire4,
+            sound_attenuation: 0.97
+        )
+    engine.add_cylinder_bank(b0)
+    engine.add_crankshaft(c0)
+
+    b0.set_cylinder_head(
+        two_stroke_head(
+            chamber_volume: 11 * units.cc,
+            intake_runner_cross_section_area: 6.2 * units.cm2,   // 28 mm
+            exhaust_runner_cross_section_area: 10.0 * units.cm2
+        )
+    )
+
+    // CDI: advanced low down, retarded up top to keep the pipe hot
+    function timing_curve(1000 * units.rpm)
+    timing_curve
+        .add_sample(0000 * units.rpm, 12 * units.deg)
+        .add_sample(1000 * units.rpm, 14 * units.deg)
+        .add_sample(2000 * units.rpm, 17 * units.deg)
+        .add_sample(3000 * units.rpm, 18 * units.deg)
+        .add_sample(4000 * units.rpm, 18 * units.deg)
+        .add_sample(5000 * units.rpm, 17 * units.deg)
+        .add_sample(6000 * units.rpm, 16 * units.deg)
+        .add_sample(7000 * units.rpm, 14 * units.deg)
+        .add_sample(8000 * units.rpm, 12 * units.deg)
+        .add_sample(9000 * units.rpm, 10 * units.deg)
+        .add_sample(10000 * units.rpm, 8 * units.deg)
+        .add_sample(11000 * units.rpm, 8 * units.deg)
+
+    engine.add_ignition_module(
+        ignition_module(timing_curve: timing_curve, rev_limit: 11000 * units.rpm, limiter_duration: 0.05)
+            .connect_wire(wires.wire1, 0 * units.deg)
+            .connect_wire(wires.wire2, 180 * units.deg)
+            .connect_wire(wires.wire3, 90 * units.deg)
+            .connect_wire(wires.wire4, 270 * units.deg)
+    )
+}
+
+private node rg500_transmission {
+    alias output __out:
+        transmission(max_clutch_torque: 60 * units.lb_ft)
+        .add_gear(2.78)
+        .add_gear(1.88)
+        .add_gear(1.44)
+        .add_gear(1.18)
+        .add_gear(1.0)
+        .add_gear(0.85);
+}
+
+private node rg500_bike {
+    alias output __out:
+        vehicle(
+            mass: 154 * units.kg + 75 * units.kg,
+            drag_coefficient: 0.6,
+            cross_sectional_area: (30 * units.inch) * (50 * units.inch),
+            diff_ratio: 3.3,
+            tire_radius: 0.34 * units.m,
+            rolling_resistance: 150 * units.N
+        );
+}
+
+public node main {
+    set_engine(suzuki_rg500())
+    set_transmission(rg500_transmission())
+    set_vehicle(rg500_bike())
+}
+
+use_default_theme()
+main()
